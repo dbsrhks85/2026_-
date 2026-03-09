@@ -94,7 +94,7 @@ class _MainScreenState extends State<MainScreen> {
       // 16kHz, Mono 고정 (Whisper AI 최적화 및 노이즈 방지)
       const config = RecordConfig(
         encoder: AudioEncoder.aacLc, 
-        sampleRate: 16000, 
+        sampleRate: 44100,
         numChannels: 1, 
         bitRate: 32000,
       );
