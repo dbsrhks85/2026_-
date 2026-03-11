@@ -1,0 +1,29 @@
+# ===== 보안 관련 (API Key, 비밀번호 등) =====
+.env
+*.env
+secrets.json
+config.py
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.venv/
+
+# ===== Node.js =====
+node_modules/
+
+# ===== IDE / 에디터 =====
+.vscode/
+.idea/
+
+# ===== OS 임시 파일 =====
+Thumbs.db
+.DS_Store
+
+# ===== 업로드 파일 (음성 파일 등) =====
+backend-server/uploads/*
+!backend-server/uploads/.gitkeep

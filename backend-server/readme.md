@@ -1,0 +1,1 @@
+여기는 AI서버 및 DB연동 폴더임(FastAPI/Flask)

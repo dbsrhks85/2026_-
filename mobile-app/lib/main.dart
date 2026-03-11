@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:geolocator/geolocator.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:async'; // VAD 타이머 및 스트림 처리를 위해 추가
+import 'services/audio_normalizer.dart';
 
 void main() {
   runApp(const MyApp());
@@ -38,9 +40,12 @@ class _MainScreenState extends State<MainScreen> {
   String _locationMessage = "현재 위치를 불러오는 중...";
   bool _isRecording = false;
   
-  final AudioRecorder _audioRecorder = AudioRecorder();
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  String? _filePath; 
+  late final AudioRecorder _audioRecorder;
+  late final AudioPlayer _audioPlayer;
+  bool _initialized = false;
+  String? _filePath;
+  String? _normalizedFilePath;
+  bool _isNormalizing = false;
 
   // VAD(침묵 감지)를 위한 변수들
   StreamSubscription<Amplitude>? _amplitudeSub;
@@ -51,28 +56,80 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    _determinePosition();
+    // UI가 먼저 렌더링된 뒤에 초기화 수행
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeApp();
+    });
+  }
+
+  /// 오디오 레코더/플레이어 초기화 + 위치 가져오기 (UI 렌더링 이후 실행)
+  Future<void> _initializeApp() async {
+    _audioRecorder = AudioRecorder();
+    _audioPlayer = AudioPlayer();
+    _initialized = true;
+    await _determinePosition();
   }
 
   @override
   void dispose() {
     _amplitudeSub?.cancel(); // 메모리 누수 방지
-    _audioRecorder.dispose();
-    _audioPlayer.dispose();
+    if (_initialized) {
+      _audioRecorder.dispose();
+      _audioPlayer.dispose();
+    }
     super.dispose();
   }
 
   Future<void> _determinePosition() async {
     try {
+      // 1. 위치 서비스 활성화 확인
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() => _locationMessage = "위치 서비스가 비활성화되어 있습니다.\n기기 설정에서 위치를 켜주세요.");
+        return;
+      }
+
+      // 2. 위치 권한 확인 및 요청
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() => _locationMessage = "위치 권한이 거부되었습니다.");
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() => _locationMessage = "위치 권한이 영구 거부되었습니다.\n앱 설정에서 권한을 허용해주세요.");
+        return;
+      }
+
+      // 3. 위치 가져오기
+      setState(() => _locationMessage = "현재 위치를 불러오는 중...");
+
+      // Android에서는 LocationSettings를 명시적으로 지정
+      late LocationSettings locationSettings;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        locationSettings = AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10),
+          forceLocationManager: true, // FusedLocationProvider 대신 LocationManager 사용
+        );
+      } else {
+        locationSettings = const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        );
+      }
+
       Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
+        locationSettings: locationSettings,
       );
       setState(() {
         _locationMessage = "위도: ${position.latitude}\n경도: ${position.longitude}";
       });
     } catch (e) {
-      setState(() => _locationMessage = "위치 정보를 가져오지 못했습니다.");
+      setState(() => _locationMessage = "위치 정보를 가져오지 못했습니다.\n($e)");
     }
   }
 
@@ -105,6 +162,7 @@ class _MainScreenState extends State<MainScreen> {
       setState(() {
         _isRecording = true;
         _filePath = null;
+        _normalizedFilePath = null;
         _locationMessage = "듣고 있습니다...\n(2초간 말씀이 없으시면 자동 전송됩니다)";
       });
 
@@ -123,7 +181,7 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  // ⏹️ 2. 녹음 종료 및 스트리밍 전송 준비
+  // ⏹️ 2. 녹음 종료 + 정규화 실행
   Future<void> _stopRecording({required bool isAutoStopped}) async {
     _amplitudeSub?.cancel(); // 볼륨 감지 중단
     final path = await _audioRecorder.stop();
@@ -131,12 +189,35 @@ class _MainScreenState extends State<MainScreen> {
     setState(() {
       _isRecording = false;
       _filePath = path;
+      _normalizedFilePath = null;
+      _isNormalizing = true;
       _determinePosition(); // 화면을 다시 원래 GPS 좌표로 복구
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(isAutoStopped ? "말씀이 끝나서 자동으로 접수를 준비합니다." : "녹음이 완료되었습니다.")),
+      SnackBar(content: Text(isAutoStopped ? "말씀이 끝나서 자동으로 접수를 준비합니다." : "녹음이 완료되었습니다. 정규화 중...")),
     );
+
+    // 녹음 완료 후 음성 정규화 실행
+    if (path != null) {
+      final normalizedPath = await AudioNormalizer.normalizeAudio(path);
+      setState(() {
+        _normalizedFilePath = normalizedPath;
+        _isNormalizing = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(normalizedPath != null
+                ? '음성 정규화 완료! 원본/정규화 재생을 비교해보세요.'
+                : '정규화 실패 — 원본 파일로 진행합니다.'),
+          ),
+        );
+      }
+    } else {
+      setState(() => _isNormalizing = false);
+    }
 
     // 녹음이 완료되면 FastAPI로 스트리밍 전송 시작
     _streamToFastAPI(path);
@@ -166,6 +247,7 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  // 🔊 원본 녹음 재생
   Future<void> _playRecording() async {
     if (_filePath != null) {
       try {
@@ -174,6 +256,19 @@ class _MainScreenState extends State<MainScreen> {
         await _audioPlayer.resume(); 
       } catch (e) {
         print("재생 에러: $e");
+      }
+    }
+  }
+
+  // 🔊 정규화된 녹음 재생
+  Future<void> _playNormalizedRecording() async {
+    if (_normalizedFilePath != null) {
+      try {
+        await _audioPlayer.stop();
+        await _audioPlayer.setSource(DeviceFileSource(_normalizedFilePath!));
+        await _audioPlayer.resume();
+      } catch (e) {
+        print("정규화 재생 에러: $e");
       }
     }
   }
@@ -221,14 +316,53 @@ class _MainScreenState extends State<MainScreen> {
                 ),
                 if (!_isRecording && _filePath != null) ...[
                   const SizedBox(width: 20),
+                  // 원본 재생 버튼 (초록)
                   GestureDetector(
                     onTap: _playRecording,
-                    child: const CircleAvatar(
-                      radius: 30,
-                      backgroundColor: Colors.green,
-                      child: Icon(Icons.play_arrow, color: Colors.white),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircleAvatar(
+                          radius: 30,
+                          backgroundColor: Colors.green,
+                          child: Icon(Icons.play_arrow, color: Colors.white),
+                        ),
+                        const SizedBox(height: 4),
+                        Text('원본', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                      ],
                     ),
                   ),
+                  const SizedBox(width: 16),
+                  // 정규화 재생 버튼 (보라) 또는 로딩 인디케이터
+                  if (_isNormalizing)
+                    const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundColor: Colors.grey,
+                          child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5)),
+                        ),
+                        SizedBox(height: 4),
+                        Text('처리 중...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ],
+                    )
+                  else if (_normalizedFilePath != null)
+                    GestureDetector(
+                      onTap: _playNormalizedRecording,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircleAvatar(
+                            radius: 30,
+                            backgroundColor: Colors.deepPurple,
+                            child: Icon(Icons.play_arrow, color: Colors.white),
+                          ),
+                          const SizedBox(height: 4),
+                          Text('정규화', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                        ],
+                      ),
+                    ),
                 ],
               ],
             ),
