@@ -9,11 +9,33 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'services/audio_normalizer.dart';
+import 'constants.dart';
 
 // ────────────────────────────────────────────────
 // 에뮬레이터에서 PC 호스트(localhost)를 가리키는 주소
 // ────────────────────────────────────────────────
 const String _kServerUrl = 'http://10.0.2.2:8000';
+
+// ── Cloud Dancer 디자인 시스템 ──────────────────────
+class AppColors {
+  // Cloud Dancer (PANTONE 11-4201 TCX) 기반 팔레트
+  static const Color cloudDancer = Color(0xFFECEAE4);   // 메인 배경
+  static const Color cloudSoft   = Color(0xFFF5F4F0);   // 카드 배경
+  static const Color cloudDeep   = Color(0xFFD8D4CB);   // 구분선/보더
+  static const Color cloudWarm   = Color(0xFFC8C3B5);   // 비활성 아이콘
+
+  // 포인트 컬러 (민원이 넥타이 & 배지의 스틸 블루)
+  static const Color accentBlue  = Color(0xFF3A6EA5);   // 주 액션
+  static const Color accentLight = Color(0xFF5B8FCC);   // 호버/강조
+  static const Color accentDeep  = Color(0xFF254E82);   // 헤더
+
+  // 상태 컬러
+  static const Color recordRed   = Color(0xFFE05252);   // 녹음 중
+  static const Color successGreen= Color(0xFF4A9E7F);   // 성공
+  static const Color textDark    = Color(0xFF2C2C2C);   // 기본 텍스트
+  static const Color textMid     = Color(0xFF6E6B62);   // 보조 텍스트
+  static const Color textLight   = Color(0xFF9E9B93);   // 힌트 텍스트
+}
 
 void main() {
   runApp(const MyApp());
@@ -27,7 +49,11 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'AI 민원 시스템',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        fontFamily: 'Pretendard',
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: AppColors.accentBlue,
+          background: AppColors.cloudDancer,
+        ),
         useMaterial3: true,
       ),
       debugShowCheckedModeBanner: false,
@@ -43,10 +69,10 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
-  String _locationMessage = "현재 위치를 불러오는 중...";
+class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
+  String _locationMessage = AppMessages.locationLoading;
   bool _isRecording = false;
-  
+
   late final AudioRecorder _audioRecorder;
   late final AudioPlayer _audioPlayer;
   bool _initialized = false;
@@ -56,24 +82,47 @@ class _MainScreenState extends State<MainScreen> {
 
   // STT 전송 상태
   bool _isSendingSTT = false;
-  String? _sttSavedDir; // JSON 저장 디렉토리 경로 (결과 안내용)
+  String? _sttSavedDir;
 
   // VAD(침묵 감지)를 위한 변수들
   StreamSubscription<Amplitude>? _amplitudeSub;
   int _silenceCounter = 0;
-  final double _silenceThreshold = -35.0; // 조용한 상태를 판별할 데시벨 (필요시 조절)
-  final int _maxSilenceFrames = 20; // 100ms * 20 = 2초간 침묵 시 자동 종료
+  final double _silenceThreshold = -35.0;
+  final int _maxSilenceFrames = 20;
+
+  // 애니메이션 컨트롤러
+  late AnimationController _pulseController;
+  late AnimationController _waveController;
+  late Animation<double> _pulseAnimation;
+  late Animation<double> _waveAnimation;
 
   @override
   void initState() {
     super.initState();
-    // UI가 먼저 렌더링된 뒤에 초기화 수행
+
+    // 맥동 애니메이션 (녹음 버튼)
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.12).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
+    // 파형 애니메이션 (음파 이펙트)
+    _waveController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _waveAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _waveController, curve: Curves.easeInOut),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeApp();
     });
   }
 
-  /// 오디오 레코더/플레이어 초기화 + 위치 가져오기 (UI 렌더링 이후 실행)
   Future<void> _initializeApp() async {
     _audioRecorder = AudioRecorder();
     _audioPlayer = AudioPlayer();
@@ -83,7 +132,9 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   void dispose() {
-    _amplitudeSub?.cancel(); // 메모리 누수 방지
+    _pulseController.dispose();
+    _waveController.dispose();
+    _amplitudeSub?.cancel();
     if (_initialized) {
       _audioRecorder.dispose();
       _audioPlayer.dispose();
@@ -93,38 +144,34 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _determinePosition() async {
     try {
-      // 1. 위치 서비스 활성화 확인
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        setState(() => _locationMessage = "위치 서비스가 비활성화되어 있습니다.\n기기 설정에서 위치를 켜주세요.");
+        setState(() => _locationMessage = AppMessages.locationServiceOff);
         return;
       }
 
-      // 2. 위치 권한 확인 및 요청
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          setState(() => _locationMessage = "위치 권한이 거부되었습니다.");
+          setState(() => _locationMessage = AppMessages.locationPermDenied);
           return;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        setState(() => _locationMessage = "위치 권한이 영구 거부되었습니다.\n앱 설정에서 권한을 허용해주세요.");
+        setState(() => _locationMessage = AppMessages.locationPermForever);
         return;
       }
 
-      // 3. 위치 가져오기
-      setState(() => _locationMessage = "현재 위치를 불러오는 중...");
+      setState(() => _locationMessage = AppMessages.locationLoading);
 
-      // Android에서는 LocationSettings를 명시적으로 지정
       late LocationSettings locationSettings;
       if (defaultTargetPlatform == TargetPlatform.android) {
         locationSettings = AndroidSettings(
           accuracy: LocationAccuracy.high,
           timeLimit: const Duration(seconds: 10),
-          forceLocationManager: true, // FusedLocationProvider 대신 LocationManager 사용
+          forceLocationManager: true,
         );
       } else {
         locationSettings = const LocationSettings(
@@ -137,14 +184,13 @@ class _MainScreenState extends State<MainScreen> {
         locationSettings: locationSettings,
       );
       setState(() {
-        _locationMessage = "위도: ${position.latitude}\n경도: ${position.longitude}";
+        _locationMessage = "위도: ${position.latitude.toStringAsFixed(5)}\n경도: ${position.longitude.toStringAsFixed(5)}";
       });
     } catch (e) {
-      setState(() => _locationMessage = "위치 정보를 가져오지 못했습니다.\n($e)");
+      setState(() => _locationMessage = '${AppMessages.locationFailed}\n($e)');
     }
   }
 
-  // 녹음 시작/중단 통합 컨트롤러
   Future<void> _toggleRecording() async {
     if (_isRecording) {
       await _stopRecording(isAutoStopped: false);
@@ -153,48 +199,44 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  // 🎙️ 1. 녹음 시작 및 VAD 적용
   Future<void> _startRecording() async {
     if (await _audioRecorder.hasPermission()) {
       final directory = await getApplicationDocumentsDirectory();
       final path = '${directory.path}/report_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      
-      // 16kHz, Mono 고정 (Whisper AI 최적화 및 노이즈 방지)
+
       const config = RecordConfig(
-        encoder: AudioEncoder.aacLc, 
+        encoder: AudioEncoder.aacLc,
         sampleRate: 44100,
-        numChannels: 1, 
+        numChannels: 1,
         bitRate: 32000,
       );
-      
+
       await _audioPlayer.stop();
       await _audioRecorder.start(config, path: path);
-      
+
       setState(() {
         _isRecording = true;
         _filePath = null;
         _normalizedFilePath = null;
-        _locationMessage = "듣고 있습니다...\n(2초간 말씀이 없으시면 자동 전송됩니다)";
+        _locationMessage = AppMessages.vadGuide;
       });
 
-      // VAD(침묵 감지) 모니터링 시작 (0.1초마다 볼륨 체크)
       _silenceCounter = 0;
       _amplitudeSub = _audioRecorder.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
         if (amp.current < _silenceThreshold) {
           _silenceCounter++;
           if (_silenceCounter >= _maxSilenceFrames) {
-            _stopRecording(isAutoStopped: true); // 2초 연속 침묵 시 강제 종료
+            _stopRecording(isAutoStopped: true);
           }
         } else {
-          _silenceCounter = 0; // 소리가 들리면 카운터 초기화
+          _silenceCounter = 0;
         }
       });
     }
   }
 
-  // ⏹️ 2. 녹음 종료 + 정규화 실행
   Future<void> _stopRecording({required bool isAutoStopped}) async {
-    _amplitudeSub?.cancel(); // 볼륨 감지 중단
+    _amplitudeSub?.cancel();
     final path = await _audioRecorder.stop();
 
     setState(() {
@@ -202,14 +244,11 @@ class _MainScreenState extends State<MainScreen> {
       _filePath = path;
       _normalizedFilePath = null;
       _isNormalizing = true;
-      _determinePosition(); // 화면을 다시 원래 GPS 좌표로 복구
+      _determinePosition();
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(isAutoStopped ? "말씀이 끝나서 자동으로 접수를 준비합니다." : "녹음이 완료되었습니다. 정규화 중...")),
-    );
+    _showSnack(isAutoStopped ? AppMessages.recordingAutoStop : AppMessages.recordingManualStop);
 
-    // 녹음 완료 후 음성 정규화 실행
     if (path != null) {
       final normalizedPath = await AudioNormalizer.normalizeAudio(path);
       setState(() {
@@ -218,26 +257,29 @@ class _MainScreenState extends State<MainScreen> {
       });
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(normalizedPath != null
-                ? '음성 정규화 완료! STT 서버로 전송 중...'
-                : '정규화 실패 — 원본 파일로 STT 진행합니다.'),
-          ),
-        );
+        _showSnack(normalizedPath != null
+            ? AppMessages.normalizeSuccess
+            : AppMessages.normalizeFailed);
       }
     } else {
       setState(() => _isNormalizing = false);
     }
 
-    // 녹음 완료 → STT 테스트 전송 (원본 & 정규화 파일 각각)
     _runSttTests(originalPath: path, normalizedPath: _normalizedFilePath);
   }
 
-  // ─────────────────────────────────────────────────────────
-  // 🚀 3. STT: 정규화 파일 우선 전송
-  //         (정규화 실패 시 원본 파일로 폴백)
-  // ─────────────────────────────────────────────────────────
+  void _showSnack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(color: Colors.white)),
+        backgroundColor: AppColors.accentBlue,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      ),
+    );
+  }
+
   Future<void> _runSttTests({
     required String? originalPath,
     required String? normalizedPath,
@@ -254,14 +296,10 @@ class _MainScreenState extends State<MainScreen> {
         .replaceAll(':', '-')
         .substring(0, 19);
 
-    // 정규화 파일 우선, 없으면 원본 사용
     final filePath = normalizedPath ?? originalPath;
     final label = normalizedPath != null ? 'normalized' : 'original';
 
-    final result = await _sendAudioToSTT(
-      filePath: filePath,
-      label: label,
-    );
+    final result = await _sendAudioToSTT(filePath: filePath, label: label);
     await _saveResultJson(
       result: result,
       label: label,
@@ -282,7 +320,6 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  /// 음성 파일을 /upload-audio 로 전송하고 STT 결과 Map 반환
   Future<Map<String, dynamic>> _sendAudioToSTT({
     required String filePath,
     required String label,
@@ -292,34 +329,23 @@ class _MainScreenState extends State<MainScreen> {
       final fileName = filePath.split('/').last;
 
       final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(
-          filePath,
-          filename: fileName,
-        ),
-        'lat': '37.0', // 테스트용 임시 좌표
+        'file': await MultipartFile.fromFile(filePath, filename: fileName),
+        'lat': '37.0',
         'lng': '127.0',
       });
 
-      print('[STT-$label] 전송 시작: $filePath');
       final response = await dio.post(
         '$_kServerUrl/upload-audio',
         data: formData,
         options: Options(receiveTimeout: const Duration(seconds: 60)),
       );
 
-      print('[STT-$label] 응답: ${response.data}');
       return Map<String, dynamic>.from(response.data as Map);
     } catch (e) {
-      print('[STT-$label] 전송 실패: $e');
-      return {
-        'success': false,
-        'stt_text': '',
-        'error': e.toString(),
-      };
+      return {'success': false, 'stt_text': '', 'error': e.toString()};
     }
   }
 
-  /// STT 결과를 JSON 파일로 저장
   Future<void> _saveResultJson({
     required Map<String, dynamic> result,
     required String label,
@@ -341,10 +367,8 @@ class _MainScreenState extends State<MainScreen> {
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
     final savePath = '$saveDir/stt_result_${label}_$timestamp.json';
     await File(savePath).writeAsString(jsonStr, flush: true);
-    print('[STT-$label] JSON 저장 완료: $savePath');
   }
 
-  /// STT 결과 다이얼로그 표시
   void _showSttResultDialog({
     required Map<String, dynamic>? result,
     required String label,
@@ -353,62 +377,150 @@ class _MainScreenState extends State<MainScreen> {
   }) {
     final text = result?['stt_text'] ?? '(없음)';
     final ok = result?['success'] == true;
+    final category = result?['report']?['category'] ?? result?['category'] ?? '-';
+    final department = result?['report']?['department'] ?? result?['department'] ?? '-';
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('🎙️ STT 결과', style: TextStyle(fontWeight: FontWeight.bold)),
-        content: SingleChildScrollView(
+      builder: (ctx) => Dialog(
+        backgroundColor: AppColors.cloudSoft,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                label == 'normalized' ? '📂 정규화 파일' : '📂 원본 파일 (정규화 실패)',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: label == 'normalized' ? Colors.deepPurple : Colors.orange,
+              // 헤더
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: ok ? AppColors.accentBlue.withOpacity(0.12) : AppColors.recordRed.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      ok ? Icons.check_circle_outline : Icons.error_outline,
+                      color: ok ? AppColors.accentBlue : AppColors.recordRed,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'STT 결과',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textDark,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // STT 텍스트 영역
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.cloudDancer,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.cloudDeep),
+                ),
+                child: Text(
+                  ok ? text : '오류: ${result?["error"]}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: ok ? AppColors.textDark : AppColors.recordRed,
+                    height: 1.5,
+                  ),
                 ),
               ),
-              const SizedBox(height: 8),
+
+              if (ok) ...[
+                const SizedBox(height: 14),
+                // 분류 결과 칩
+                Row(
+                  children: [
+                    _infoChip(Icons.category_outlined, '분류', category, AppColors.accentBlue),
+                    const SizedBox(width: 8),
+                    _infoChip(Icons.business_outlined, '부서', department, AppColors.successGreen),
+                  ],
+                ),
+              ],
+
+              const SizedBox(height: 20),
+              // 저장 경로
               Text(
-                ok ? text : '❌ 실패: ${result?["error"]}',
-                style: TextStyle(color: ok ? Colors.black87 : Colors.red),
+                '💾 $savedDir/stt_result_${label}_$timestamp.json',
+                style: const TextStyle(fontSize: 9, color: AppColors.textLight),
               ),
-              const Divider(height: 24),
-              const Text('💾 JSON 저장 경로', style: TextStyle(fontSize: 11, color: Colors.grey)),
-              const SizedBox(height: 4),
-              Text(
-                '$savedDir/stt_result_${label}_$timestamp.json',
-                style: const TextStyle(fontSize: 10, color: Colors.grey),
+
+              const SizedBox(height: 20),
+              // 확인 버튼
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accentBlue,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    elevation: 0,
+                  ),
+                  child: const Text('확인', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('확인'),
-          ),
-        ],
       ),
     );
   }
 
-  // 🔊 원본 녹음 재생
+  Widget _infoChip(IconData icon, String label, String value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.25)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.w600)),
+                  Text(value, style: TextStyle(fontSize: 12, color: AppColors.textDark, fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _playRecording() async {
     if (_filePath != null) {
       try {
-        await _audioPlayer.stop(); 
-        await _audioPlayer.setSource(DeviceFileSource(_filePath!)); 
-        await _audioPlayer.resume(); 
+        await _audioPlayer.stop();
+        await _audioPlayer.setSource(DeviceFileSource(_filePath!));
+        await _audioPlayer.resume();
       } catch (e) {
-        print("재생 에러: $e");
+        debugPrint("재생 에러: $e");
       }
     }
   }
 
-  // 🔊 정규화된 녹음 재생
   Future<void> _playNormalizedRecording() async {
     if (_normalizedFilePath != null) {
       try {
@@ -416,7 +528,7 @@ class _MainScreenState extends State<MainScreen> {
         await _audioPlayer.setSource(DeviceFileSource(_normalizedFilePath!));
         await _audioPlayer.resume();
       } catch (e) {
-        print("정규화 재생 에러: $e");
+        debugPrint("정규화 재생 에러: $e");
       }
     }
   }
@@ -424,99 +536,445 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.blueAccent,
-        title: const Text('AI 음성 민원 접수', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        centerTitle: true,
+      backgroundColor: AppColors.cloudDancer,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // ── Layer 1: 민원이 캐릭터 (배경색 위, UI 아래) ────────
+            Positioned.fill(
+              child: Align(
+                alignment: const Alignment(0, -0.45), // 화면 위쪽으로 더 올림
+                child: AnimatedBuilder(
+                  animation: _isRecording ? _pulseAnimation : const AlwaysStoppedAnimation(1.0),
+                  builder: (context, child) => Transform.scale(
+                    scale: _isRecording ? _pulseAnimation.value : 1.0,
+                    child: child,
+                  ),
+                  child: Builder(
+                    builder: (context) {
+                      // 화면 너비의 190%를 최대값으로 제한 (2배 크기)
+                      final size = (MediaQuery.of(context).size.width * 1.9).clamp(0.0, 1120.0);
+                      return Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // 녹음 중 파동 이펙트
+                          if (_isRecording)
+                            AnimatedBuilder(
+                              animation: _waveAnimation,
+                              builder: (context, _) => Container(
+                                width: size + 60 + (_waveAnimation.value * 48),
+                                height: size + 60 + (_waveAnimation.value * 48),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: AppColors.recordRed.withOpacity(
+                                      0.07 - _waveAnimation.value * 0.05),
+                                ),
+                              ),
+                            ),
+                          // 민원이 이미지 (화면 너비 기준 4배 크기)
+                          Image.asset(
+                            'assets/images/minwoni_clouddancer_sizeup.png',
+                            width: size,
+                            height: size,
+                            fit: BoxFit.contain,
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+
+            // ── Layer 2: UI 레이아웃 (헤더, 카드, 버튼) ──────────
+            Column(
+              children: [
+                _buildHeader(),
+                Expanded(child: _buildCenterContent()),
+                _buildLocationCard(),
+                _buildBottomPanel(),
+              ],
+            ),
+          ],
+        ),
       ),
-      body: Column(
+    );
+  }
+
+  // ── 헤더 ──────────────────────────────────────────────────
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
         children: [
-          Expanded(
-            child: Container(
-              color: Colors.grey[200],
-              width: double.infinity,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+          // 앱 로고/이름
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.accentBlue,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.smart_toy_outlined, color: Colors.white, size: 14),
+                SizedBox(width: 5),
+                Text(AppMessages.brandName, style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+              ],
+            ),
+          ),
+          const Spacer(),
+          // STT 전송 중 인디케이터
+          if (_isSendingSTT)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.accentBlue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppColors.accentBlue.withOpacity(0.3)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(_isRecording ? Icons.mic : Icons.location_on, size: 60, color: _isRecording ? Colors.red : Colors.blueAccent),
-                  const SizedBox(height: 16),
-                  Text(_locationMessage, textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500)),
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.accentBlue,
+                    ),
+                  ),
+                  SizedBox(width: 6),
+                  Text(AppMessages.analyzingBadge, style: TextStyle(fontSize: 11, color: AppColors.accentBlue, fontWeight: FontWeight.w600)),
                 ],
               ),
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 20),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                GestureDetector(
-                  onTap: _toggleRecording,
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundColor: _isRecording ? Colors.red : Colors.blue,
-                    child: Icon(_isRecording ? Icons.stop : Icons.mic, color: Colors.white, size: 40),
-                  ),
-                ),
-                if (!_isRecording && _filePath != null) ...[
-                  const SizedBox(width: 20),
-                  // 원본 재생 버튼 (초록)
-                  GestureDetector(
-                    onTap: _playRecording,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircleAvatar(
-                          radius: 30,
-                          backgroundColor: Colors.green,
-                          child: Icon(Icons.play_arrow, color: Colors.white),
-                        ),
-                        const SizedBox(height: 4),
-                        Text('원본', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  // 정규화 재생 버튼 (보라) 또는 로딩 인디케이터
-                  if (_isNormalizing)
-                    const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          radius: 30,
-                          backgroundColor: Colors.grey,
-                          child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5)),
-                        ),
-                        SizedBox(height: 4),
-                        Text('처리 중...', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                      ],
-                    )
-                  else if (_normalizedFilePath != null)
-                    GestureDetector(
-                      onTap: _playNormalizedRecording,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const CircleAvatar(
-                            radius: 30,
-                            backgroundColor: Colors.deepPurple,
-                            child: Icon(Icons.play_arrow, color: Colors.white),
-                          ),
-                          const SizedBox(height: 4),
-                          Text('정규화', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                        ],
-                      ),
-                    ),
-                ],
-              ],
-            ),
-          )
         ],
       ),
+    );
+  }
+
+  // ── 캐릭터 배지 + 상태 메시지 (캐릭터는 Stack 레이어에서 별도 렌더링) ─
+  Widget _buildCenterContent() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.end, // 하단 정렬 → 캐릭터 발 아래에 위치
+      children: [
+        // 캐릭터 이름 배지
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppColors.accentBlue,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.accentBlue.withOpacity(0.25),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.verified_outlined, size: 12, color: Colors.white70),
+              SizedBox(width: 5),
+              Text(AppMessages.mascotName,
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+              SizedBox(width: 5),
+              Text(AppMessages.mascotSubtitle,
+                  style: TextStyle(color: Colors.white70, fontSize: 10)),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 16),
+
+        // 상태 메시지 카드
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          decoration: BoxDecoration(
+            color: AppColors.cloudSoft.withOpacity(0.92), // 살짝 투명 → 캐릭터가 은은하게 비침
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.cloudDeep),
+          ),
+          child: Column(
+            children: [
+              if (_isRecording) ...[
+                // 파형 애니메이션 바
+                AnimatedBuilder(
+                  animation: _waveAnimation,
+                  builder: (context, _) => _buildWaveBars(),
+                ),
+                const SizedBox(height: 10),
+              ],
+              Text(
+                _isRecording ? AppMessages.listeningMain : (_isSendingSTT ? AppMessages.analyzingMain : AppMessages.idleGuide),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: _isRecording ? AppColors.recordRed : AppColors.textDark,
+                ),
+              ),
+              if (!_isRecording && !_isSendingSTT)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    AppMessages.idleSubGuide,
+                    style: TextStyle(fontSize: 11, color: AppColors.textLight),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // 파형 바 시각화
+  Widget _buildWaveBars() {
+    final heights = [0.4, 0.7, 1.0, 0.6, 0.9, 0.5, 0.8, 0.4, 0.7, 1.0, 0.6, 0.5];
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: List.generate(heights.length, (i) {
+        final phase = (_waveAnimation.value + i * 0.15) % 1.0;
+        final h = (heights[i] * 0.5 + phase * 0.5).clamp(0.2, 1.0);
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          width: 4,
+          height: 24 * h,
+          decoration: BoxDecoration(
+            color: AppColors.recordRed.withOpacity(0.6 + h * 0.4),
+            borderRadius: BorderRadius.circular(4),
+          ),
+        );
+      }),
+    );
+  }
+
+  // ── GPS 카드 ──────────────────────────────────────────────
+  Widget _buildLocationCard() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.cloudSoft,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.cloudDeep),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: AppColors.accentBlue.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.location_on_outlined, color: AppColors.accentBlue, size: 16),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _locationMessage,
+              style: const TextStyle(fontSize: 12, color: AppColors.textMid, height: 1.4),
+            ),
+          ),
+          GestureDetector(
+            onTap: _determinePosition,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppColors.cloudDeep.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.refresh, size: 14, color: AppColors.textMid),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── 하단 버튼 패널 ─────────────────────────────────────────
+  Widget _buildBottomPanel() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+      decoration: BoxDecoration(
+        color: AppColors.cloudSoft,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        border: Border(top: BorderSide(color: AppColors.cloudDeep, width: 1)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 드래그 핸들
+          Container(
+            width: 36,
+            height: 4,
+            margin: const EdgeInsets.only(bottom: 20),
+            decoration: BoxDecoration(
+              color: AppColors.cloudDeep,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+
+          // 버튼 행
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // 원본 재생 버튼
+              if (!_isRecording && _filePath != null)
+                _buildPlayButton(
+                  onTap: _playRecording,
+                  label: '원본',
+                  icon: Icons.volume_up_outlined,
+                  color: AppColors.successGreen,
+                  size: 52,
+                ),
+
+              if (!_isRecording && _filePath != null)
+                const SizedBox(width: 16),
+
+              // 메인 녹음 버튼
+              _buildMainRecordButton(),
+
+              if (!_isRecording && _filePath != null)
+                const SizedBox(width: 16),
+
+              // 정규화 재생 버튼
+              if (!_isRecording && _filePath != null)
+                _isNormalizing
+                    ? _buildLoadingButton(size: 52)
+                    : (_normalizedFilePath != null
+                        ? _buildPlayButton(
+                            onTap: _playNormalizedRecording,
+                            label: '정규화',
+                            icon: Icons.tune_outlined,
+                            color: AppColors.accentBlue,
+                            size: 52,
+                          )
+                        : const SizedBox(width: 52)),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // 버튼 설명 레이블
+          Text(
+            _isRecording ? AppMessages.hintTapToStop : AppMessages.hintTapToRecord,
+            style: const TextStyle(fontSize: 11, color: AppColors.textLight),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 메인 녹음/정지 버튼
+  Widget _buildMainRecordButton() {
+    return GestureDetector(
+      onTap: _toggleRecording,
+      child: AnimatedBuilder(
+        animation: _isRecording ? _pulseAnimation : const AlwaysStoppedAnimation(1.0),
+        builder: (context, child) {
+          return Transform.scale(
+            scale: _isRecording ? _pulseAnimation.value : 1.0,
+            child: child,
+          );
+        },
+        child: Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: _isRecording
+                  ? [AppColors.recordRed, Color(0xFFC03030)]
+                  : [AppColors.accentLight, AppColors.accentBlue],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: (_isRecording ? AppColors.recordRed : AppColors.accentBlue).withOpacity(0.35),
+                blurRadius: 16,
+                spreadRadius: 2,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Icon(
+            _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+            color: Colors.white,
+            size: 34,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 재생 버튼 (원본 / 정규화)
+  Widget _buildPlayButton({
+    required VoidCallback onTap,
+    required String label,
+    required IconData icon,
+    required Color color,
+    required double size,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.withOpacity(0.1),
+              border: Border.all(color: color.withOpacity(0.4), width: 1.5),
+            ),
+            child: Icon(icon, color: color, size: 22),
+          ),
+          const SizedBox(height: 5),
+          Text(label, style: TextStyle(fontSize: 10, color: AppColors.textMid, fontWeight: FontWeight.w500)),
+        ],
+      ),
+    );
+  }
+
+  // 로딩 버튼 (정규화 처리 중)
+  Widget _buildLoadingButton({required double size}) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppColors.cloudDeep.withOpacity(0.3),
+            border: Border.all(color: AppColors.cloudDeep, width: 1.5),
+          ),
+          child: const Center(
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accentBlue),
+            ),
+          ),
+        ),
+        const SizedBox(height: 5),
+        const Text(AppMessages.labelProcessing, style: TextStyle(fontSize: 10, color: AppColors.textLight)),
+      ],
     );
   }
 }

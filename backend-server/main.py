@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from stt_engine import transcribe_audio
 from nlp_engine import classify_complaint
+from messages import ApiMessages
 
 # .env 파일에서 환경변수 로드
 load_dotenv()
@@ -92,8 +93,8 @@ def resolve_report(report_id: int):
         if r["id"] == report_id:
             r["status"] = "completed"
             r["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            return {"status": "success"}
-    return {"status": "error", "message": "해당 ID의 민원을 찾을 수 없습니다."}
+            return {"status": ApiMessages.RESOLVE_SUCCESS}
+    return {"status": "error", "message": ApiMessages.REPORT_NOT_FOUND}
 
 
 # ===== 새로운 AI 파이프라인 API =====
@@ -148,7 +149,7 @@ async def upload_audio(
             "success": False,
             "step": "stt",
             "error": stt_result["error"],
-            "message": "음성 인식에 실패했습니다. 다시 시도해주세요."
+            "message": ApiMessages.STT_FAILED
         }
 
     stt_text = stt_result["text"]
@@ -162,7 +163,7 @@ async def upload_audio(
             "step": "nlp",
             "stt_text": stt_text,
             "error": nlp_result["error"],
-            "message": "민원 분류에 실패했습니다. 텍스트는 정상 변환되었습니다."
+            "message": ApiMessages.NLP_FAILED
         }
 
     # 4단계: 민원 데이터 생성
@@ -207,7 +208,7 @@ async def upload_audio(
 
     return {
         "success": True,
-        "message": "민원이 성공적으로 접수되었습니다.",
+        "message": ApiMessages.REPORT_SUCCESS,
         "report": new_report,
         "stt_text": stt_text
     }

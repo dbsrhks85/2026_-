@@ -2,6 +2,7 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
+from messages import SttMessages
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -20,7 +21,7 @@ async def transcribe_audio(file_path: str) -> dict:
     try:
         # 파일 존재 여부 확인
         if not os.path.exists(file_path):
-            return {"text": "", "success": False, "error": "파일을 찾을 수 없습니다."}
+            return {"text": "", "success": False, "error": SttMessages.FILE_NOT_FOUND}
 
         # Whisper API 호출 (한국어 최적화)
         with open(file_path, "rb") as audio_file:
@@ -33,9 +34,9 @@ async def transcribe_audio(file_path: str) -> dict:
 
         # 빈 결과 체크
         if not transcript or transcript.strip() == "":
-            return {"text": "", "success": False, "error": "음성을 인식하지 못했습니다."}
+            return {"text": "", "success": False, "error": SttMessages.EMPTY_TRANSCRIPT}
 
         return {"text": transcript.strip(), "success": True, "error": None}
 
     except Exception as e:
-        return {"text": "", "success": False, "error": f"STT 처리 중 오류 발생: {str(e)}"}
+        return {"text": "", "success": False, "error": SttMessages.PROCESSING_ERROR.format(error=str(e))}

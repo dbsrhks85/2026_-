@@ -3,6 +3,7 @@ import os
 import json
 from openai import OpenAI
 from dotenv import load_dotenv
+from messages import NlpMessages
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -69,12 +70,12 @@ async def classify_complaint(text: str) -> dict:
         # 빈 텍스트 체크
         if not text or text.strip() == "":
             return {
-                "title": "내용 없음",
+                "title": NlpMessages.DEFAULT_TITLE,
                 "category": "unclassified",
                 "department": DEPARTMENT_MAP["unclassified"],
                 "confidence": 0.0,
                 "success": False,
-                "error": "분류할 텍스트가 비어있습니다."
+                "error": NlpMessages.EMPTY_TEXT
             }
 
         # GPT-4o mini 호출 (temperature=0.0으로 일관된 결과 보장)
@@ -110,19 +111,19 @@ async def classify_complaint(text: str) -> dict:
 
     except json.JSONDecodeError:
         return {
-            "title": "분류 실패",
+            "title": NlpMessages.FAILED_TITLE,
             "category": "unclassified",
             "department": DEPARTMENT_MAP["unclassified"],
             "confidence": 0.0,
             "success": False,
-            "error": "GPT 응답을 JSON으로 파싱할 수 없습니다."
+            "error": NlpMessages.JSON_PARSE_ERROR
         }
     except Exception as e:
         return {
-            "title": "분류 실패",
+            "title": NlpMessages.FAILED_TITLE,
             "category": "unclassified",
             "department": DEPARTMENT_MAP["unclassified"],
             "confidence": 0.0,
             "success": False,
-            "error": f"NLP 분류 중 오류 발생: {str(e)}"
+            "error": NlpMessages.PROCESSING_ERROR.format(error=str(e))
         }
