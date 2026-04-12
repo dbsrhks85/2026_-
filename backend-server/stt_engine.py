@@ -1,11 +1,12 @@
 # STT 엔진 - OpenAI Whisper API를 사용한 음성→텍스트 변환
 import os
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from messages import SttMessages
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# [Fix #7] AsyncOpenAI 클라이언트로 전환 (async 함수 내 동기 호출 블로킹 방지)
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 async def transcribe_audio(file_path: str) -> dict:
@@ -24,8 +25,9 @@ async def transcribe_audio(file_path: str) -> dict:
             return {"text": "", "success": False, "error": SttMessages.FILE_NOT_FOUND}
 
         # Whisper API 호출 (한국어 최적화)
+        # [Fix #7] await 추가 (AsyncOpenAI 사용)
         with open(file_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
+            transcript = await client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
                 language="ko",  # 한국어 인식 최적화

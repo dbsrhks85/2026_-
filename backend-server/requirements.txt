@@ -1,6 +1,10 @@
-fastapi
-uvicorn[standard]
-python-multipart
-openai
-python-dotenv
-supabase
+# AI 민원 시스템 - Backend 의존성 패키지
+# 설치 명령어: pip install -r requirements.txt
+# Python 3.11.9 기준
+
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+python-multipart==0.0.22
+openai==2.26.0
+python-dotenv==1.2.2
+supabase==2.28.3

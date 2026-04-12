@@ -1,14 +1,18 @@
 # python -m uvicorn main:app --reload 로 서버 실행
 import os
-import json
+import uuid
 import shutil
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# [Fix #1] database.py에서 supabase 클라이언트 import
+from database import supabase
 from stt_engine import transcribe_audio
 from nlp_engine import classify_complaint
+# [Fix #4] messages.py에서 ApiMessages import
+from messages import ApiMessages
 
 load_dotenv()
 
@@ -20,7 +24,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # TODO: 배포 시 실제 도메인으로 제한 필요 (보안)
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -28,23 +32,28 @@ app.add_middleware(
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# [Fix #11] 업로드 파일 크기 제한 (25MB)
+MAX_FILE_SIZE = 25 * 1024 * 1024
+
 
 # ─────────────────────────────────────────
 # 내부 유틸: 카카오 ID로 users 테이블에서 user_id 조회
 # 없으면 자동 생성 (최초 로그인 처리)
 # ─────────────────────────────────────────
 def get_or_create_user(kakao_id: str, nickname: str = None) -> int:
-    result = supabase.table("users").select("id").eq("kakao_id", kakao_id).single().execute()
+    # [Fix #5] .single() 제거 → 결과가 없을 때 APIError 예외 방지
+    result = supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
 
     if result.data:
-        return result.data["id"]
+        return result.data[0]["id"]
 
     # 신규 유저 생성
-    new_user = supabase.table("users").insert({
+    # [Fix #Design-6] upsert 사용으로 동시 요청 Race Condition 방지
+    new_user = supabase.table("users").upsert({
         "kakao_id": kakao_id,
         "nickname": nickname or kakao_id,
         "role": "user"
-    }).execute()
+    }, on_conflict="kakao_id").execute()
 
     return new_user.data[0]["id"]
 
@@ -62,11 +71,12 @@ def get_reports():
         "id, user_id, title, stt_text, lat, lng, category, department, status, created_at, resolved_at"
     ).order("created_at", desc=True).execute()
 
-    now = datetime.utcnow()
+    # [Fix #8] timezone-aware 방식으로 통일 (기존 코드는 ±9시간 오차 가능)
+    now = datetime.now(timezone.utc)
     active = []
     for r in result.data:
         if r["status"] == "completed" and r["resolved_at"]:
-            resolved_time = datetime.fromisoformat(r["resolved_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+            resolved_time = datetime.fromisoformat(r["resolved_at"].replace("Z", "+00:00"))
             if now - resolved_time > timedelta(days=10):
                 continue
         active.append(r)
@@ -75,16 +85,17 @@ def get_reports():
 
 
 # ─────────────────────────────────────────
-# GET /get-reports/{user_kakao_id}  —  내 민원만 조회
+# GET /get-reports/{kakao_id}  —  내 민원만 조회
 # ─────────────────────────────────────────
 @app.get("/get-reports/{kakao_id}")
 def get_my_reports(kakao_id: str):
     """특정 사용자의 민원만 조회"""
-    user_result = supabase.table("users").select("id").eq("kakao_id", kakao_id).single().execute()
+    # [Fix #5] .single() 제거 → 존재하지 않는 유저 조회 시 예외 방지
+    user_result = supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
     if not user_result.data:
         return []
 
-    user_id = user_result.data["id"]
+    user_id = user_result.data[0]["id"]
     result = supabase.table("complaints").select(
         "id, title, stt_text, lat, lng, category, department, status, created_at, resolved_at"
     ).eq("user_id", user_id).order("created_at", desc=True).execute()
@@ -98,12 +109,17 @@ def get_my_reports(kakao_id: str):
 @app.post("/resolve-report/{report_id}")
 def resolve_report(report_id: int):
     """민원 처리 완료"""
-    for r in reports:
-        if r["id"] == report_id:
-            r["status"] = "completed"
-            r["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            return {"status": "success"}
-    return {"status": "error", "message": "해당 ID의 민원을 찾을 수 없습니다."}
+    # [Fix #3] 인메모리 'reports' 리스트 잔재 제거 → Supabase UPDATE로 교체
+    result = supabase.table("complaints").update({
+        "status": "completed",
+        "resolved_at": datetime.now(timezone.utc).isoformat()
+    }).eq("id", report_id).execute()
+
+    if not result.data:
+        # [Fix #Quality-2] 실패 시 200 OK 대신 HTTP 404 반환
+        raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+
+    return {"status": ApiMessages.RESOLVE_SUCCESS}
 
 
 # ─────────────────────────────────────────
@@ -126,6 +142,12 @@ async def upload_audio(
     4. Supabase complaints 테이블에 저장
     """
 
+    # ── 0. 파일 크기 검증
+    # [Fix #11] 파일 크기 제한 + [Fix #6] async read로 이벤트 루프 블로킹 개선
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="파일 크기는 25MB를 초과할 수 없습니다.")
+
     # ── 1. 유저 확인 / 생성
     try:
         user_id = get_or_create_user(kakao_id, nickname)
@@ -133,17 +155,22 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail=f"사용자 처리 중 오류: {str(e)}")
 
     # ── 2. 음성 파일 저장
+    # [Fix #10] Path Traversal 방지: file.filename 대신 UUID로 파일명 생성
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"report_{timestamp}_{file.filename}"
+    ext = os.path.splitext(file.filename or "")[-1].lower() or ".m4a"
+    file_name = f"report_{timestamp}_{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOAD_DIR, file_name)
 
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(content)
 
     # ── 3. STT (음성 → 텍스트)
     stt_result = await transcribe_audio(file_path)
 
     if not stt_result["success"]:
+        # [Fix #12] STT 실패 시 저장된 음성 파일 즉시 삭제
+        if os.path.exists(file_path):
+            os.remove(file_path)
         return {
             "success": False,
             "step": "stt",
@@ -157,6 +184,9 @@ async def upload_audio(
     nlp_result = await classify_complaint(stt_text)
 
     if not nlp_result["success"]:
+        # [Fix #12] NLP 실패 시 저장된 음성 파일 즉시 삭제
+        if os.path.exists(file_path):
+            os.remove(file_path)
         return {
             "success": False,
             "step": "nlp",
@@ -186,8 +216,9 @@ async def upload_audio(
 
     return {
         "success": True,
-        "message": "민원이 성공적으로 접수되었습니다.",
-        "report": new_report,
+        "message": ApiMessages.REPORT_SUCCESS,
+        # [Fix #2] new_report → saved (미정의 변수 수정)
+        "report": saved,
         "stt_text": stt_text
     }
 

@@ -1,12 +1,13 @@
 # NLP 분류 엔진 - GPT-4o mini를 사용한 민원 자동 분류
 import os
 import json
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from messages import NlpMessages
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# [Fix #7] AsyncOpenAI 클라이언트로 전환 (async 함수 내 동기 호출 블로킹 방지)
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # 민원 분류 카테고리 정의
 CATEGORIES = {
@@ -79,7 +80,8 @@ async def classify_complaint(text: str) -> dict:
             }
 
         # GPT-4o mini 호출 (temperature=0.0으로 일관된 결과 보장)
-        response = client.chat.completions.create(
+        # [Fix #7] await 추가 (AsyncOpenAI 사용)
+        response = await client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.0,
             messages=[
