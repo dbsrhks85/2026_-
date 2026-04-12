@@ -44,18 +44,25 @@ def get_or_create_user(kakao_id: str, nickname: str = None) -> int:
     # [Fix #5] .single() 제거 → 결과가 없을 때 APIError 예외 방지
     result = supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
 
-    if result.data:
+    # 친구 코드 채택: len() 명시적 체크로 더 안전
+    if result.data and len(result.data) > 0:
         return result.data[0]["id"]
 
     # 신규 유저 생성
-    # [Fix #Design-6] upsert 사용으로 동시 요청 Race Condition 방지
+    # [Fix #Design-6] 내 코드 유지: upsert로 Race Condition 방지 (insert보다 안전)
     new_user = supabase.table("users").upsert({
-        "kakao_id": kakao_id,
-        "nickname": nickname or kakao_id,
-        "role": "user"
+        "kakao_id":   kakao_id,
+        "nickname":   nickname or kakao_id,
+        "role":       "user",
+        "push_token": None,
+        "phone":      None
     }, on_conflict="kakao_id").execute()
 
-    return new_user.data[0]["id"]
+    # 친구 코드 채택: insert 결과 검증으로 실패 명시
+    if new_user.data and len(new_user.data) > 0:
+        return new_user.data[0]["id"]
+
+    raise Exception("유저 생성 실패: Supabase에서 데이터가 반환되지 않았습니다.")
 
 
 # ─────────────────────────────────────────
@@ -90,9 +97,9 @@ def get_reports():
 @app.get("/get-reports/{kakao_id}")
 def get_my_reports(kakao_id: str):
     """특정 사용자의 민원만 조회"""
-    # [Fix #5] .single() 제거 → 존재하지 않는 유저 조회 시 예외 방지
     user_result = supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
-    if not user_result.data:
+    # 친구 코드 채택: len() 명시적 체크로 더 안전
+    if not user_result.data or len(user_result.data) == 0:
         return []
 
     user_id = user_result.data[0]["id"]
@@ -109,17 +116,24 @@ def get_my_reports(kakao_id: str):
 @app.post("/resolve-report/{report_id}")
 def resolve_report(report_id: int):
     """민원 처리 완료"""
-    # [Fix #3] 인메모리 'reports' 리스트 잔재 제거 → Supabase UPDATE로 교체
-    result = supabase.table("complaints").update({
-        "status": "completed",
-        "resolved_at": datetime.now(timezone.utc).isoformat()
-    }).eq("id", report_id).execute()
+    # 내 코드 유지: datetime.now(timezone.utc) → 올바른 timezone 처리
+    # 친구 코드 채택: try-except 추가로 DB 오류 방어
+    try:
+        result = supabase.table("complaints").update({
+            "status": "completed",
+            "resolved_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", report_id).execute()
 
-    if not result.data:
-        # [Fix #Quality-2] 실패 시 200 OK 대신 HTTP 404 반환
-        raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+        if not result.data:
+            # [Fix #Quality-2] 실패 시 200 OK 대신 HTTP 404 반환
+            raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
 
-    return {"status": ApiMessages.RESOLVE_SUCCESS}
+        return {"status": ApiMessages.RESOLVE_SUCCESS}
+
+    except HTTPException:
+        raise  # 위에서 명시적으로 발생시킨 HTTPException은 그대로 전달
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB 업데이트 중 오류: {str(e)}")
 
 
 # ─────────────────────────────────────────
@@ -217,7 +231,6 @@ async def upload_audio(
     return {
         "success": True,
         "message": ApiMessages.REPORT_SUCCESS,
-        # [Fix #2] new_report → saved (미정의 변수 수정)
         "report": saved,
         "stt_text": stt_text
     }
