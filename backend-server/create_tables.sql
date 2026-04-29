@@ -26,24 +26,35 @@ CREATE TABLE IF NOT EXISTS departments (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. complaints 테이블
+-- [수정본] complaints 테이블: 워크플로우 지원을 위한 컬럼 확장
 CREATE TABLE IF NOT EXISTS complaints (
-    id          BIGSERIAL PRIMARY KEY,
-    user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    stt_text    TEXT NOT NULL,
-    title       VARCHAR(200),
-    lat         DECIMAL(10,7),
-    lng         DECIMAL(10,7),
-    category    VARCHAR(50),
-    department  VARCHAR(50) REFERENCES departments(key), -- 부서 키 참조
-    status      VARCHAR(20) DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'processing', 'completed')),
-    audio_path  TEXT,
-    created_at  TIMESTAMPTZ DEFAULT NOW(),
-    resolved_at TIMESTAMPTZ
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stt_text     TEXT NOT NULL,
+    title        VARCHAR(200),
+    lat          DECIMAL(10,7),
+    lng          DECIMAL(10,7),
+    address      TEXT,                 -- [추가] 비현장 민원이나 상세 주소 정보
+    category     VARCHAR(50),
+    department   VARCHAR(50) REFERENCES departments(key),
+    
+    -- [추가] 현장(field) vs 행정/비현장(admin_task) 구분
+    complaint_type VARCHAR(20) DEFAULT 'field' CHECK (complaint_type IN ('field', 'admin_task')),
+    
+    -- [수정] 상태값 단계 확정 (기존과 동일하지만 명시적 확인)
+    status       VARCHAR(20) DEFAULT 'pending' 
+                 CHECK (status IN ('pending', 'processing', 'completed')),
+    
+    audio_path      TEXT,
+    attachment_urls TEXT[] DEFAULT '{}', -- [추가] 첨부 이미지/파일 URL 리스트
+    attachment_note TEXT,               -- [추가] 관리자나 사용자가 남기는 추가 메모
+    
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at  TIMESTAMPTZ
 );
 
--- 인덱스
+-- 인덱스 추가 (타입별 필터링 성능 향상)
+CREATE INDEX IF NOT EXISTS idx_complaints_type   ON complaints(complaint_type);
 CREATE INDEX IF NOT EXISTS idx_complaints_user   ON complaints(user_id);
 CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status);
 CREATE INDEX IF NOT EXISTS idx_complaints_gps    ON complaints(lat, lng);

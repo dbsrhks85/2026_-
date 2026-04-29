@@ -1,25 +1,6 @@
-# ============================================================
-# 🚀 서버 실행 가이드 (backend-server/ 폴더에서 실행)
-# ============================================================
-#
-# 1️⃣  가상환경 활성화 (최초 1회 또는 터미널 새로 열 때마다)
-#     source venv/bin/activate
-#
-# 2️⃣  서버 실행
-#     python -m uvicorn main:app --reload
-#
-# 3️⃣  서버 종료
-#     Ctrl + C
-#
-# 4️⃣  가상환경 비활성화 (선택사항)
-#     deactivate
-#
-# 📌 서버 실행 후 확인
-#     - API 문서  : http://127.0.0.1:8000/docs
-#     - 상태 확인 : http://127.0.0.1:8000/health
-# ============================================================
 import os
 import uuid
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,81 +12,79 @@ from stt_engine import transcribe_audio
 from nlp_engine import classify_complaint
 from messages import ApiMessages
 
+# .env 파일 로드
 load_dotenv()
-
 
 # ─────────────────────────────────────────
 # FastAPI lifespan — 서버 시작/종료 이벤트
-# 서버가 켜질 때 비동기 Supabase 클라이언트를 딱 1번만 초기화
 # ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_supabase()   # 🚀 서버 시작: DB 클라이언트 초기화
     yield
-    # (필요 시 서버 종료 로직 여기에 추가)
-
 
 app = FastAPI(
     title="AI 민원 접수 시스템",
     description="음성 기반 민원 자동 접수 및 분류 API",
-    version="3.0.0",
+    version="3.1.0",
     lifespan=lifespan
 )
 
+# CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: 배포 시 실제 도메인으로 제한 필요 (보안)
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# 업로드 디렉토리 및 설정
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
 
-
 # ─────────────────────────────────────────
-# 내부 유틸: 카카오 ID로 users 테이블에서 user_id 조회
-# 없으면 자동 생성 (최초 로그인 처리)
+# 내부 유틸: 유저 관리
 # ─────────────────────────────────────────
 async def get_or_create_user(kakao_id: str, nickname: str = None) -> int:
     supabase = get_supabase()
-
     result = await supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
 
     if result.data and len(result.data) > 0:
         return result.data[0]["id"]
 
-    # 신규 유저 생성 (upsert로 Race Condition 방지)
     new_user = await supabase.table("users").upsert({
-        "kakao_id":   kakao_id,
-        "nickname":   nickname or kakao_id,
-        "role":       "user",
-        "push_token": None,
-        "phone":      None
+        "kakao_id": kakao_id,
+        "nickname": nickname or kakao_id,
+        "role": "user",
     }, on_conflict="kakao_id").execute()
 
-    if new_user.data and len(new_user.data) > 0:
-        return new_user.data[0]["id"]
-
-    raise Exception("유저 생성 실패: Supabase에서 데이터가 반환되지 않았습니다.")
-
+    return new_user.data[0]["id"]
 
 # ─────────────────────────────────────────
-# GET /get-reports  —  민원 목록 조회
+# API 엔드포인트
 # ─────────────────────────────────────────
+
+@app.get("/health")
+async def health_check():
+    """서버 및 DB 상태 확인"""
+    try:
+        supabase = get_supabase()
+        count = await supabase.table("complaints").select("id", count="exact").execute()
+        return {
+            "status": "running",
+            "db": "connected",
+            "total_complaints": count.count,
+            "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    except Exception as e:
+        return {"status": "running", "db": f"error: {str(e)}"}
+
 @app.get("/get-reports")
 async def get_reports():
-    """
-    민원 전체 목록 조회
-    - completed 상태이고 resolved_at 이후 10일 이상 지난 항목은 제외
-    """
+    """민원 전체 목록 조회 (최근 10일 필터링 포함)"""
     supabase = get_supabase()
-
-    result = await supabase.table("complaints").select(
-        "id, user_id, title, stt_text, lat, lng, category, department, status, created_at, resolved_at"
-    ).order("created_at", desc=True).execute()
+    result = await supabase.table("complaints").select("*").order("created_at", desc=True).execute()
 
     now = datetime.now(timezone.utc)
     active = []
@@ -115,414 +94,125 @@ async def get_reports():
             if now - resolved_time > timedelta(days=10):
                 continue
         active.append(r)
-
     return active
 
-
-# ─────────────────────────────────────────
-# GET /get-reports/{kakao_id}  —  내 민원만 조회
-# ─────────────────────────────────────────
 @app.get("/get-reports/{kakao_id}")
 async def get_my_reports(kakao_id: str):
-    """특정 사용자의 민원만 조회"""
+    """내 민원만 조회"""
     supabase = get_supabase()
+    user_res = await supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
+    if not user_res.data: return []
 
-    user_result = await supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
-    if not user_result.data or len(user_result.data) == 0:
-        return []
-
-    user_id = user_result.data[0]["id"]
-    result = await supabase.table("complaints").select(
-        "id, title, stt_text, lat, lng, category, department, status, created_at, resolved_at"
-    ).eq("user_id", user_id).order("created_at", desc=True).execute()
-
+    user_id = user_res.data[0]["id"]
+    result = await supabase.table("complaints").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
     return result.data
 
-
-# ─────────────────────────────────────────
-# GET /get-departments  —  부서 정보 조회
-# ─────────────────────────────────────────
-@app.get("/get-departments")
-async def get_departments():
-    """부서 목록 및 관련 규칙 조회"""
+@app.post("/update-status/{report_id}")
+async def update_status(report_id: int, status: str = Form(...)):
+    """민원 상태 변경 (pending, processing, completed)"""
     supabase = get_supabase()
-    result = await supabase.table("departments").select("*").order("id").execute()
-    return result.data
+    update_data = {"status": status}
+    if status == "completed":
+        update_data["resolved_at"] = datetime.now(timezone.utc).isoformat()
 
+    result = await supabase.table("complaints").update(update_data).eq("id", report_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+    return {"success": True, "status": status}
 
-# ─────────────────────────────────────────
-# POST /resolve-report/{report_id}  —  민원 처리 상태 변경
-# ─────────────────────────────────────────
-@app.post("/resolve-report/{report_id}")
-async def resolve_report(report_id: int):
-    """민원 처리 완료"""
-    supabase = get_supabase()
-
-    try:
-        result = await supabase.table("complaints").update({
-            "status": "completed",
-            "resolved_at": datetime.now(timezone.utc).isoformat()
-        }).eq("id", report_id).execute()
-
-        if not result.data:
-            raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
-
-        return {"status": ApiMessages.RESOLVE_SUCCESS}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB 업데이트 중 오류: {str(e)}")
-
-
-# ─────────────────────────────────────────
-# POST /upload-audio  —  음성 민원 접수 (핵심 API)
-# ─────────────────────────────────────────
-@app.post("/upload-audio")
-async def upload_audio(
-    file: UploadFile = File(..., description="음성 파일 (m4a, wav, mp3 등)"),
-    lat: float = Form(..., description="위도 (GPS)"),
-    lng: float = Form(..., description="경도 (GPS)"),
-    kakao_id: str = Form(default="anonymous", description="카카오 로그인 ID (미로그인 시 anonymous)"),
-    nickname: str = Form(default=None, description="카카오 닉네임 (선택)")
-):
-    """
-    🎙️ 음성 민원 접수 API
-
-    1. 음성 파일 서버 저장
-    2. Whisper STT → 텍스트 변환
-    3. GPT-4o mini → 카테고리 / 부서 분류
-    4. Supabase complaints 테이블에 저장
-    """
-    supabase = get_supabase()
-
-    # ── 0. 파일 크기 검증 + async read
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="파일 크기는 25MB를 초과할 수 없습니다.")
-
-    # ── 1. 유저 확인 / 생성
-    try:
-        user_id = await get_or_create_user(kakao_id, nickname)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"사용자 처리 중 오류: {str(e)}")
-
-    # ── 2. 음성 파일 저장 (UUID 파일명으로 Path Traversal 방지)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    ext = os.path.splitext(file.filename or "")[-1].lower() or ".m4a"
-    file_name = f"report_{timestamp}_{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, file_name)
-
-    with open(file_path, "wb") as buffer:
-        buffer.write(content)
-
-    # ── [추가] STT/GPT 테스트 결과 저장을 위한 폴더 및 JSON 데이터 준비
-    import json
-    test_results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_results")
-    os.makedirs(test_results_dir, exist_ok=True)
-    json_path = os.path.join(test_results_dir, f"{os.path.splitext(file_name)[0]}.json")
-    
-    test_result_data = {
-        "audio_file": file_name,
-        "stt_success": False,
-        "stt_text": None,
-        "stt_error": None,
-        "nlp_success": False,
-        "nlp_result": None,
-        "nlp_error": None
-    }
-
-    def save_test_result():
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(test_result_data, f, ensure_ascii=False, indent=2)
-
-    # ── 3. STT (음성 → 텍스트)
-    stt_result = await transcribe_audio(file_path)
-    
-    test_result_data["stt_success"] = stt_result["success"]
-    if not stt_result["success"]:
-        test_result_data["stt_error"] = stt_result["error"]
-        save_test_result()  # 에러 상태 저장
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return {
-            "success": False,
-            "step": "stt",
-            "error": stt_result["error"],
-            "message": ApiMessages.STT_FAILED
-        }
-
-    stt_text = stt_result["text"]
-    test_result_data["stt_text"] = stt_text
-    save_test_result()  # STT 성공 상태 임시 저장
-
-    # ── 4. NLP 분류 (텍스트 → 카테고리 / 부서)
-    nlp_result = await classify_complaint(stt_text)
-    
-    test_result_data["nlp_success"] = nlp_result["success"]
-    if not nlp_result["success"]:
-        test_result_data["nlp_error"] = nlp_result["error"]
-        save_test_result()
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return {
-            "success": False,
-            "step": "nlp",
-            "stt_text": stt_text,
-            "error": nlp_result["error"],
-            "message": ApiMessages.NLP_FAILED
-        }
-        
-    test_result_data["nlp_result"] = {
-        "title": nlp_result["title"],
-        "category": nlp_result["category"],
-        "department": nlp_result["department"]
-    }
-    save_test_result()  # 최종 성공 상태 저장
-
-    # ── 5. DB 저장
-    new_complaint = {
-        "user_id":    user_id,
-        "stt_text":   stt_text,
-        "title":      nlp_result["title"],
-        "lat":        lat,
-        "lng":        lng,
-        "category":   nlp_result["category"],
-        "department": nlp_result["department"],
-        "status":     "pending",
-        "audio_path": file_path,
-    }
-
-    try:
-        db_result = await supabase.table("complaints").insert(new_complaint).execute()
-        saved = db_result.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB 저장 중 오류: {str(e)}")
-
-    return {
-        "success": True,
-        "message": ApiMessages.REPORT_SUCCESS,
-        "report": saved,
-        "stt_text": stt_text
-    }
-
-
-# ─────────────────────────────────────────
-# POST /register-user  —  유저 등록 / 푸시 토큰 갱신
-# ─────────────────────────────────────────
-@app.post("/register-user")
-async def register_user(
-    kakao_id: str = Form(...),
-    nickname: str = Form(default=None),
-    phone: str = Form(default=None),
-    push_token: str = Form(default=None)
-):
-    """카카오 로그인 후 유저 등록 및 푸시 토큰 저장"""
-    supabase = get_supabase()
-
-    existing = await supabase.table("users").select("id").eq("kakao_id", kakao_id).execute()
-
-    if existing.data:
-        update_fields = {}
-        if push_token: update_fields["push_token"] = push_token
-        if nickname:   update_fields["nickname"]   = nickname
-        if phone:      update_fields["phone"]       = phone
-
-        if update_fields:
-            await supabase.table("users").update(update_fields).eq("kakao_id", kakao_id).execute()
-
-        return {"status": "updated", "user_id": existing.data[0]["id"]}
-    else:
-        new_user = await supabase.table("users").insert({
-            "kakao_id":   kakao_id,
-            "nickname":   nickname or kakao_id,
-            "phone":      phone,
-            "push_token": push_token,
-            "role":       "user"
-        }).execute()
-        return {"status": "created", "user_id": new_user.data[0]["id"]}
-
-
-# ─────────────────────────────────────────
-# POST /stt-only  —  STT만 실행 (텍스트 재확인용)
-# ─────────────────────────────────────────
 @app.post("/stt-only")
-async def stt_only(
-    file: UploadFile = File(..., description="음성 파일 (m4a, wav, mp3 등)")
-):
-    """
-    🎙️ STT + NLP 초기 분류 API
-    - 앱에서 음성을 텍스트로 바꾸고, GPT가 1차 분류한 결과를 함께 반환
-    - 사용자가 바텀시트에서 결과를 수정할 수 있도록 제공
-    - 임시 음성 파일은 STT 처리 완료 즉시 삭제
-    """
+async def stt_only(file: UploadFile = File(...)):
+    """음성 전송 시 STT 결과와 NLP 분류 제안 반환"""
     content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="파일 크기는 25MB를 초과할 수 없습니다.")
-
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     ext = os.path.splitext(file.filename or "")[-1].lower() or ".m4a"
-    file_name = f"stt_tmp_{timestamp}_{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, file_name)
+    file_path = os.path.join(UPLOAD_DIR, f"tmp_{uuid.uuid4().hex}{ext}")
 
-    with open(file_path, "wb") as buffer:
-        buffer.write(content)
+    with open(file_path, "wb") as f:
+        f.write(content)
 
     stt_result = await transcribe_audio(file_path)
-
-    if os.path.exists(file_path):
-        os.remove(file_path)  # 임시 파일 즉시 삭제
-
-    # ── [추가] STT 결과를 JSON으로 저장
-    import json
-    test_results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_results")
-    os.makedirs(test_results_dir, exist_ok=True)
-    json_path = os.path.join(test_results_dir, f"stt_{timestamp}.json")
-    
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "step": "STT",
-            "audio_file": file_name,
-            "success": stt_result["success"],
-            "stt_text": stt_result.get("text", ""),
-            "error": stt_result.get("error", None)
-        }, f, ensure_ascii=False, indent=2)
+    if os.path.exists(file_path): os.remove(file_path)
 
     if not stt_result["success"]:
-        return {
-            "success": False,
-            "stt_text": "",
-            "error": stt_result["error"],
-            "message": ApiMessages.STT_FAILED
-        }
+        raise HTTPException(status_code=500, detail=ApiMessages.STT_FAILED)
 
-    # ── [추가] STT가 성공하면 NLP도 바로 실행해서 앱에 제안 ──
-    from nlp_engine import classify_complaint
-    nlp_result = await classify_complaint(stt_result["text"])
-
+    nlp_suggestion = await classify_complaint(stt_result["text"])
     return {
         "success": True,
         "stt_text": stt_result["text"],
-        "nlp_suggestion": nlp_result, # GPT가 추천하는 부서, 유형, 제목 등
-        "message": "STT 변환 및 초기 분류 완료"
+        "nlp_suggestion": nlp_suggestion
     }
 
-
-# ─────────────────────────────────────────
-# POST /submit-complaint  —  NLP 분류 + DB 저장
-# ─────────────────────────────────────────
 @app.post("/submit-complaint")
 async def submit_complaint(
-    stt_text: str = Form(..., description="사용자가 확인한 STT 텍스트"),
-    lat: float = Form(None, description="위도 (GPS) - 행정 민원시 None 가능"),
-    lng: float = Form(None, description="경도 (GPS) - 행정 민원시 None 가능"),
-    kakao_id: str = Form(default="anonymous", description="카카오 로그인 ID"),
-    nickname: str = Form(default=None, description="카카오 닉네임 (선택)"),
-    title: str = Form(None, description="앱에서 확정한 제목"),
-    category: str = Form(None, description="앱에서 확정한 카테고리"),
-    department: str = Form(None, description="앱에서 확정한 부서"),
-    complaint_type: str = Form(None, description="앱에서 확정한 현장/행정 유형"),
+    stt_text: str = Form(...),
+    lat: float = Form(None),
+    lng: float = Form(None),
+    address: str = Form(None),
+    kakao_id: str = Form(default="anonymous"),
+    nickname: str = Form(default=None),
+    title: str = Form(None),
+    category: str = Form(None),
+    department: str = Form(None),
+    complaint_type: str = Form("field"),
+    attachment_note: str = Form(None),
     attachments: list[UploadFile] = File(default=[])
 ):
-    """
-    ✅ 민원 최종 접수 API — 사용자가 STT 결과를 확인/수정한 뒤 호출
-    - 앱에서 넘어온 NLP 결과를 우선 사용 (비용 절감)
-    - Supabase complaints 테이블에 저장
-    """
+    """최종 민원 제출 및 DB 저장"""
     supabase = get_supabase()
 
-    try:
-        user_id = await get_or_create_user(kakao_id, nickname)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"사용자 처리 중 오류: {str(e)}")
+    # 1. 유저 ID 확보
+    user_id = await get_or_create_user(kakao_id, nickname)
 
-    # 앱에서 넘겨준 분류값이 있으면 그대로 쓰고, 없으면 NLP 재실행
-    if title and category and department and complaint_type:
-        nlp_result = {
-            "success": True,
-            "title": title,
-            "category": category,
-            "department": department,
-            "complaint_type": complaint_type
-        }
-    else:
-        nlp_result = await classify_complaint(stt_text)
+    # 2. 첨부파일 저장
+    saved_urls = []
+    for file in attachments:
+        if file.filename:
+            unique_name = f"at_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}_{file.filename}"
+            file_path = os.path.join(UPLOAD_DIR, unique_name)
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+            saved_urls.append(file_path)
 
-    # ── NLP 분류 결과를 JSON으로 저장
-    import json
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    test_results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_results")
-    os.makedirs(test_results_dir, exist_ok=True)
-    json_path = os.path.join(test_results_dir, f"nlp_{timestamp}.json")
-    
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "step": "NLP_Final",
-            "stt_text_input": stt_text,
-            "success": nlp_result.get("success", False),
-            "title": nlp_result.get("title", ""),
-            "complaint_type": nlp_result.get("complaint_type", "field"),
-            "category": nlp_result.get("category", ""),
-            "department": nlp_result.get("department", ""),
-            "error": nlp_result.get("error", None)
-        }, f, ensure_ascii=False, indent=2)
+    # 3. 데이터 보완 (NLP)
+    if not (title and category and department):
+        nlp = await classify_complaint(stt_text)
+        title = title or nlp.get("title", "제목 없음")
+        category = category or nlp.get("category", "기타")
+        department = department or nlp.get("department", "해당 없음")
 
-    if not nlp_result.get("success", False):
-        return {
-            "success": False,
-            "step": "nlp",
-            "stt_text": stt_text,
-            "error": nlp_result.get("error", "Unknown error"),
-            "message": ApiMessages.NLP_FAILED,
-        }
-
-    new_complaint = {
-        "user_id":    user_id,
-        "stt_text":   stt_text,
-        "title":      nlp_result["title"],
-        "lat":        lat,
-        "lng":        lng,
-        "complaint_type": nlp_result.get("complaint_type", "field"),
-        "category":   nlp_result["category"],
-        "department": nlp_result["department"],
-        "status":     "pending",
-        "audio_path": None,
-        "attachment_urls": [],
-        "attachment_note": None
-    }
-
-    try:
-        db_result = await supabase.table("complaints").insert(new_complaint).execute()
-        saved = db_result.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB 저장 중 오류: {str(e)}")
-
-    return {
-        "success": True,
-        "message": ApiMessages.REPORT_SUCCESS,
-        "report": saved,
+    # 4. DB Insert 객체 생성
+    complaint_data = {
+        "user_id": user_id,
         "stt_text": stt_text,
+        "title": title,
+        "lat": lat,
+        "lng": lng,
+        "address": address,
+        "complaint_type": complaint_type,
+        "category": category,
+        "department": department,
+        "status": "pending",
+        "attachment_urls": saved_urls,
+        "attachment_note": attachment_note
     }
 
-
-# ─────────────────────────────────────────
-# GET /health  —  서버 상태 확인
-# ─────────────────────────────────────────
-@app.get("/health")
-async def health_check():
-    """서버 및 DB 연결 상태 확인"""
+    # 5. DB 저장 및 로그 기록
     try:
-        supabase = get_supabase()
-        count = await supabase.table("complaints").select("id", count="exact").execute()
-        db_status = "connected"
-        total = count.count if count.count is not None else 0
-    except Exception as e:
-        db_status = f"error: {str(e)}"
-        total = -1
+        db_res = await supabase.table("complaints").insert(complaint_data).execute()
+        
+        # 테스트 로그 저장 (선택 사항)
+        log_path = os.path.join(os.path.dirname(__file__), "test_results", f"log_{uuid.uuid4().hex[:8]}.json")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(complaint_data, f, ensure_ascii=False, indent=2)
 
-    return {
-        "status": "running",
-        "db": db_status,
-        "total_complaints": total,
-        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
+        return {
+            "success": True,
+            "message": ApiMessages.REPORT_SUCCESS,
+            "report": db_res.data[0]
+        }
+    except Exception as e:
+        print(f"DB Insert Error: {e}")
+        raise HTTPException(status_code=500, detail=f"데이터 저장 실패: {str(e)}")
