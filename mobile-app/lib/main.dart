@@ -14,6 +14,8 @@ import 'config.dart'; // ← 서버 주소는 config.dart에서 관리 (git 제�
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:kakao_map_plugin/kakao_map_plugin.dart';
+import 'map_picker_page.dart';
 
 // ── Cloud Dancer 디자인 시스템 ──────────────────────
 class AppColors {
@@ -38,15 +40,16 @@ class AppColors {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // 카카오 SDK 초기화 (네이티브 키 & 자바스크립트 키 세팅)
+
+  // 카카오 로그인 SDK 초기화
   KakaoSdk.init(
     nativeAppKey: kKakaoNativeAppKey,
     javaScriptAppKey: kKakaoMapApiKey,
   );
-  
-  // [디버깅 코드 제거됨]
-  
+
+  // 카카오맵 플러그인 초기화 (JavaScript Key 사용)
+  AuthRepository.initialize(appKey: kKakaoMapApiKey);
+
   runApp(const MyApp());
 }
 
@@ -146,7 +149,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     _audioRecorder = AudioRecorder();
     _audioPlayer = AudioPlayer();
     _initialized = true;
-    await _determinePosition();
+    // GPS 자동 취득 제거 — 현장 민원 위치 동의 시점에만 취득
   }
 
   @override
@@ -381,12 +384,33 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     List<File> attachedFiles = [];
     final TextEditingController textController = TextEditingController(text: sttText);
 
+    // 위치 관련 상태
+    bool locationConsented = false;
+    bool isLoadingGps = false;
+    double? selectedLat;
+    double? selectedLng;
+    const double defaultLat = 37.8813; // 춘천시청 기본 좌표
+    const double defaultLng = 127.7298;
+
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (BuildContext context, StateSetter setModalState) {
+
+          Future<void> onConsentYes() async {
+            setModalState(() { locationConsented = true; isLoadingGps = true; });
+            await _determinePosition();
+            final initLat = _currentPosition?.latitude ?? defaultLat;
+            final initLng = _currentPosition?.longitude ?? defaultLng;
+            setModalState(() {
+              selectedLat = initLat;
+              selectedLng = initLng;
+              isLoadingGps = false;
+            });
+          }
+
           return Container(
             decoration: const BoxDecoration(
               color: AppColors.cloudSoft,
@@ -400,176 +424,325 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 24),
-                  decoration: BoxDecoration(
-                    color: AppColors.cloudDeep,
-                    borderRadius: BorderRadius.circular(2),
+                  Container(
+                    width: 36, height: 4,
+                    margin: const EdgeInsets.only(bottom: 24),
+                    decoration: BoxDecoration(color: AppColors.cloudDeep, borderRadius: BorderRadius.circular(2)),
                   ),
-                ),
+                  const Text(AppMessages.sttConfirmTitle,
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                  const SizedBox(height: 6),
+                  const Text("아래 민원 내용을 확인하고 알맞은 유형을 선택해주세요.",
+                      style: TextStyle(fontSize: 13, color: AppColors.textMid)),
+                  const SizedBox(height: 20),
 
-                const Text(
-                  AppMessages.sttConfirmTitle,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textDark,
+                  // ── 유형 선택 토글
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('📍 현장 민원'),
+                        selected: currentType == 'field',
+                        selectedColor: AppColors.accentBlue.withOpacity(0.2),
+                        onSelected: (_) => setModalState(() { currentType = 'field'; }),
+                      ),
+                      const SizedBox(width: 12),
+                      ChoiceChip(
+                        label: const Text('📄 행정 민원'),
+                        selected: currentType == 'admin',
+                        selectedColor: AppColors.accentBlue.withOpacity(0.2),
+                        onSelected: (_) => setModalState(() {
+                          currentType = 'admin';
+                          locationConsented = false;
+                          selectedLat = null;
+                          selectedLng = null;
+                        }),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  "아래 민원 내용을 확인하고 알맞은 유형을 선택해주세요.",
-                  style: TextStyle(fontSize: 13, color: AppColors.textMid),
-                ),
-                const SizedBox(height: 20),
+                  const SizedBox(height: 16),
 
-                // 유형 선택 토글
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    ChoiceChip(
-                      label: const Text('📍 현장 민원'),
-                      selected: currentType == 'field',
-                      selectedColor: AppColors.accentBlue.withOpacity(0.2),
-                      onSelected: (bool selected) {
-                        setModalState(() => currentType = 'field');
-                      },
+                  // ── 민원 텍스트 편집 필드
+                  Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: AppColors.cloudDancer,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.cloudDeep),
                     ),
-                    const SizedBox(width: 12),
-                    ChoiceChip(
-                      label: const Text('📄 행정 민원'),
-                      selected: currentType == 'admin',
-                      selectedColor: AppColors.accentBlue.withOpacity(0.2),
-                      onSelected: (bool selected) {
-                        setModalState(() => currentType = 'admin');
-                      },
+                    child: TextField(
+                      controller: textController,
+                      maxLines: null,
+                      keyboardType: TextInputType.multiline,
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.all(18),
+                        hintText: '수정할 민원 내용을 입력하세요',
+                      ),
+                      style: const TextStyle(fontSize: 15, color: AppColors.textDark,
+                          fontWeight: FontWeight.w500, height: 1.65),
                     ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // ── 현장 민원 전용: 위치 첨부 섹션
+                  if (currentType == 'field') ...[
+                    if (!locationConsented) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppColors.accentBlue.withOpacity(0.07),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.accentBlue.withOpacity(0.25)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(AppMessages.locationConsentTitle,
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                            const SizedBox(height: 4),
+                            const Text(AppMessages.locationConsentSub,
+                                style: TextStyle(fontSize: 12, color: AppColors.textMid)),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: onConsentYes,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppColors.accentBlue,
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                      elevation: 0,
+                                    ),
+                                    child: const Text(AppMessages.locationConsentYes,
+                                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: OutlinedButton(
+                                    onPressed: () {},
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: AppColors.textMid,
+                                      side: const BorderSide(color: AppColors.cloudDeep),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                    ),
+                                    child: const Text(AppMessages.locationConsentNo,
+                                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else ...[
+                      if (isLoadingGps)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(width: 16, height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accentBlue)),
+                              SizedBox(width: 10),
+                              Text(AppMessages.locationGpsWaiting,
+                                  style: TextStyle(fontSize: 13, color: AppColors.textMid)),
+                            ],
+                          ),
+                        )
+                      else ...[
+                        // ── 위치 선택 완료 여부에 따라 다른 UI 표시
+                        if (selectedLat == null) ...[
+                          // 지도 열기 버튼
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () async {
+                                final result = await Navigator.push<LatLng>(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => MapPickerPage(
+                                      initialLat: _currentPosition?.latitude ?? defaultLat,
+                                      initialLng: _currentPosition?.longitude ?? defaultLng,
+                                    ),
+                                  ),
+                                );
+                                if (result != null) {
+                                  setModalState(() {
+                                    selectedLat = result.latitude;
+                                    selectedLng = result.longitude;
+                                  });
+                                }
+                              },
+                              icon: const Icon(Icons.map_outlined, size: 20),
+                              label: const Text('지도에서 위치 선택하기',
+                                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.accentBlue,
+                                side: const BorderSide(color: AppColors.accentBlue, width: 1.5),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          // 위치 선택 완료 표시
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE05252).withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: const Color(0xFFE05252).withOpacity(0.3)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.location_pin, color: Color(0xFFE05252), size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(AppMessages.mapPinConfirmed,
+                                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                                              color: Color(0xFFE05252))),
+                                      Text(
+                                        '${selectedLat!.toStringAsFixed(5)}, ${selectedLng!.toStringAsFixed(5)}',
+                                        style: const TextStyle(fontSize: 11, color: AppColors.textMid),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                // 위치 재선택 버튼
+                                TextButton(
+                                  onPressed: () async {
+                                    final result = await Navigator.push<LatLng>(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => MapPickerPage(
+                                          initialLat: selectedLat!,
+                                          initialLng: selectedLng!,
+                                        ),
+                                      ),
+                                    );
+                                    if (result != null) {
+                                      setModalState(() {
+                                        selectedLat = result.latitude;
+                                        selectedLng = result.longitude;
+                                      });
+                                    }
+                                  },
+                                  child: const Text('변경',
+                                      style: TextStyle(fontSize: 12, color: AppColors.accentBlue)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // 위치 선택 취소
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: () => setModalState(() {
+                                locationConsented = false;
+                                selectedLat = null;
+                                selectedLng = null;
+                              }),
+                              child: const Text('위치 선택 취소',
+                                  style: TextStyle(fontSize: 12, color: AppColors.textMid)),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ],
+                    const SizedBox(height: 8),
                   ],
-                ),
-                const SizedBox(height: 16),
 
-                Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: AppColors.cloudDancer,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.cloudDeep),
-                  ),
-                  child: TextField(
-                    controller: textController,
-                    maxLines: null,
-                    keyboardType: TextInputType.multiline,
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.all(18),
-                      hintText: '수정할 민원 내용을 입력하세요',
-                    ),
-                    style: const TextStyle(
-                      fontSize: 15,
-                      color: AppColors.textDark,
-                      fontWeight: FontWeight.w500,
-                      height: 1.65,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // 첨부 파일 UI (유형 상관없이 표시됨 - 사용자가 원함)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: () async {
-                      final picker = ImagePicker();
-                      final XFile? result = await picker.pickImage(source: ImageSource.gallery);
-                      if (result != null) {
-                        setModalState(() {
-                          attachedFiles.add(File(result.path));
-                        });
-                      }
-                    },
-                    icon: const Icon(Icons.attach_file, size: 20, color: AppColors.textMid),
-                    label: const Text(
-                      '파일/사진 첨부하기 (선택)',
-                      style: TextStyle(color: AppColors.textMid),
-                    ),
-                  ),
-                ),
-                if (attachedFiles.isNotEmpty)
+                  // ── 파일 첨부
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: 12, bottom: 8),
-                      child: Text(
-                        '첨부됨: ${attachedFiles.last.path.split('/').last}',
-                        style: const TextStyle(fontSize: 12, color: AppColors.accentBlue),
+                    child: TextButton.icon(
+                      onPressed: () async {
+                        final picker = ImagePicker();
+                        final XFile? result = await picker.pickImage(source: ImageSource.gallery);
+                        if (result != null) {
+                          setModalState(() => attachedFiles.add(File(result.path)));
+                        }
+                      },
+                      icon: const Icon(Icons.attach_file, size: 20, color: AppColors.textMid),
+                      label: const Text('파일/사진 첨부하기 (선택)',
+                          style: TextStyle(color: AppColors.textMid)),
+                    ),
+                  ),
+                  if (attachedFiles.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 12, bottom: 8),
+                        child: Text('첨부됨: ${attachedFiles.last.path.split('/').last}',
+                            style: const TextStyle(fontSize: 12, color: AppColors.accentBlue)),
+                      ),
+                    ),
+
+                  const SizedBox(height: 24),
+
+                  // ── 접수 버튼
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _submitComplaintWithText(
+                          sttText: textController.text,
+                          complaintType: currentType,
+                          category: nlpSuggestion?['category'],
+                          department: nlpSuggestion?['department'],
+                          title: nlpSuggestion?['title'],
+                          attachedFiles: attachedFiles,
+                          selectedLat: (currentType == 'field' && locationConsented) ? selectedLat : null,
+                          selectedLng: (currentType == 'field' && locationConsented) ? selectedLng : null,
+                        );
+                      },
+                      icon: const Icon(Icons.check_circle_outline, size: 20),
+                      label: const Text(AppMessages.sttConfirmYes,
+                          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accentBlue,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        elevation: 0,
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
 
-                const SizedBox(height: 24),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _submitComplaintWithText(
-                        sttText: textController.text,
-                        complaintType: currentType,
-                        category: nlpSuggestion?['category'],
-                        department: nlpSuggestion?['department'],
-                        title: nlpSuggestion?['title'],
-                        attachedFiles: attachedFiles,
-                      );
-                    },
-                    icon: const Icon(Icons.check_circle_outline, size: 20),
-                    label: const Text(
-                      AppMessages.sttConfirmYes,
-                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.accentBlue,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
+                  // ── 재녹음 버튼
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        setState(() { _filePath = null; _normalizedFilePath = null; });
+                        _showSnack(AppMessages.sttConfirmNoSnack);
+                      },
+                      icon: const Icon(Icons.mic_outlined, size: 20),
+                      label: const Text(AppMessages.sttConfirmNo,
+                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.textMid,
+                        side: const BorderSide(color: AppColors.cloudDeep, width: 1.5),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      elevation: 0,
                     ),
                   ),
-                ),
-                const SizedBox(height: 12),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      setState(() {
-                        _filePath = null;
-                        _normalizedFilePath = null;
-                      });
-                      _showSnack(AppMessages.sttConfirmNoSnack);
-                    },
-                    icon: const Icon(Icons.mic_outlined, size: 20),
-                    label: const Text(
-                      AppMessages.sttConfirmNo,
-                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.textMid,
-                      side: const BorderSide(color: AppColors.cloudDeep, width: 1.5),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+                ],
+              ),
             ),
           );
         }
@@ -587,20 +760,21 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     String? department,
     String? title,
     List<File> attachedFiles = const [],
+    double? selectedLat,  // 사용자가 지도 핀으로 선택한 위도 (field+동의 시)
+    double? selectedLng,  // 사용자가 지도 핀으로 선택한 경도 (field+동의 시)
   }) async {
     setState(() => _isSubmitting = true);
 
-    final lat = _currentPosition?.latitude ?? 37.0;
-    final lng = _currentPosition?.longitude ?? 127.0;
-
     try {
       final dio = Dio();
-      
+
+      // 위치 정보: field+동의 시 드래그 좌표, admin 또는 거절 시 null
       final mapData = <String, dynamic>{
         'stt_text': sttText,
-        'lat': lat.toString(),
-        'lng': lng.toString(),
         'kakao_id': _kakaoUser?.id.toString() ?? 'anonymous',
+        'nickname': _kakaoUser?.kakaoAccount?.profile?.nickname ?? '', // 기능2: 닉네임 DB 저장
+        if (selectedLat != null) 'lat': selectedLat.toString(),
+        if (selectedLng != null) 'lng': selectedLng.toString(),
         if (complaintType != null) 'complaint_type': complaintType,
         if (category != null) 'category': category,
         if (department != null) 'department': department,

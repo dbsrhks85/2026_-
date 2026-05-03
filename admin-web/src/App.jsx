@@ -130,7 +130,7 @@ function App() {
   const loadDepartments = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/get-departments`);
-      if (!res.ok) throw new Error('API response not ok');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (Array.isArray(data)) {
         setDepartments(data);
@@ -157,10 +157,12 @@ function App() {
     setLoading(true);
     try {
       const res = await fetch(`${API_URL}/get-reports`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setReports(data);
+      setReports(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error('민원 로드 실패:', e);
+      setReports([]);
     } finally {
       setLoading(false);
     }
@@ -250,7 +252,13 @@ function App() {
     markersRef.current = {};
 
     filteredReports.forEach((report) => {
-      const pos = new kakao.maps.LatLng(report.lat, report.lng);
+      if (report.lat == null || report.lng == null) return;
+
+      const lat = Number(report.lat);
+      const lng = Number(report.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const pos = new kakao.maps.LatLng(lat, lng);
 
       const marker = new kakao.maps.Marker({
         position: pos,
@@ -310,10 +318,11 @@ function App() {
       if (res.ok) {
         loadReports();
       } else {
-        alert('상태 업데이트에 실패했습니다.');
+        throw new Error(`HTTP ${res.status}`);
       }
     } catch (e) {
       console.error('상태 업데이트 에러:', e);
+      window.alert('처리 완료에 실패했습니다. 서버 상태를 확인해주세요.');
     }
   };
 

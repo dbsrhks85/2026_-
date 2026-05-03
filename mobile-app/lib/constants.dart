@@ -59,4 +59,13 @@ class AppMessages {
   static const String sttSubmitFailed    = '접수 중 오류가 발생했어요. 다시 시도해주세요.';
   static const String sttFetchFailed     = '음성 인식에 실패했어요. 다시 녹음해주세요.';
   static const String submittingBadge    = '접수 중';
+
+  // ── 위치 정보 동의 (현장 민원) ────────────────────────────
+  static const String locationConsentTitle   = '현재 위치를 민원에 첨부하시겠습니까?';
+  static const String locationConsentSub     = '지도를 이동해 현장 위치를 정중앙에 맞추면 자동으로 좌표가 저장돼요.';
+  static const String locationConsentYes     = '예, 위치 첨부';
+  static const String locationConsentNo      = '아니오';
+  static const String mapPinGuide            = '지도를 이동해 현장 위치를 중앙에 맞춰주세요';
+  static const String mapPinConfirmed        = '📍 위치가 설정되었습니다';
+  static const String locationGpsWaiting     = '현재 위치를 불러오는 중...';
 }

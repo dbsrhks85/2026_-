@@ -45,15 +45,54 @@ CREATE TABLE IF NOT EXISTS complaints (
     title       VARCHAR(200),
     lat         DECIMAL(10,7),
     lng         DECIMAL(10,7),
+    address     TEXT,
     category    VARCHAR(50),
     department  VARCHAR(50) REFERENCES departments(key),
+    complaint_type VARCHAR(20) DEFAULT 'field'
+                  CHECK (complaint_type IN ('field', 'admin')),
     status      VARCHAR(20) DEFAULT 'pending'
                   CHECK (status IN ('pending', 'processing', 'completed')),
     audio_path  TEXT,
+    attachment_urls TEXT[] DEFAULT '{}',
+    attachment_note TEXT,
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     resolved_at TIMESTAMPTZ
 );
 
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS complaint_type VARCHAR(20) DEFAULT 'field';
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS attachment_urls TEXT[] DEFAULT '{}';
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS attachment_note TEXT;
+
+UPDATE complaints
+SET complaint_type = 'admin'
+WHERE complaint_type = 'admin_task';
+
+UPDATE complaints
+SET complaint_type = 'field'
+WHERE complaint_type IS NULL
+   OR complaint_type NOT IN ('field', 'admin');
+
+DO $$
+DECLARE
+    constraint_name TEXT;
+BEGIN
+    FOR constraint_name IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'complaints'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%complaint_type%'
+    LOOP
+        EXECUTE format('ALTER TABLE complaints DROP CONSTRAINT %I', constraint_name);
+    END LOOP;
+
+    ALTER TABLE complaints
+        ADD CONSTRAINT complaints_complaint_type_check
+        CHECK (complaint_type IN ('field', 'admin'));
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_complaints_type   ON complaints(complaint_type);
 CREATE INDEX IF NOT EXISTS idx_complaints_user   ON complaints(user_id);
 CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status);
 CREATE INDEX IF NOT EXISTS idx_complaints_gps    ON complaints(lat, lng);

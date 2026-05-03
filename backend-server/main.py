@@ -1,3 +1,23 @@
+# ============================================================
+# 🚀 서버 실행 가이드 (backend-server/ 폴더에서 실행)
+# ============================================================
+#
+# 1️⃣  가상환경 활성화 (최초 1회 또는 터미널 새로 열 때마다)
+#     source venv/bin/activate
+#
+# 2️⃣  서버 실행
+#     python -m uvicorn main:app --reload
+#
+# 3️⃣  서버 종료
+#     Ctrl + C
+#
+# 4️⃣  가상환경 비활성화 (선택사항)
+#     deactivate
+#
+# 📌 서버 실행 후 확인
+#     - API 문서  : http://127.0.0.1:8000/docs
+#     - 상태 확인 : http://127.0.0.1:8000/health
+# ============================================================
 import os
 import uuid
 import json
@@ -110,6 +130,13 @@ async def get_reports():
         active.append(r)
     return active
 
+@app.get("/get-departments")
+async def get_departments():
+    """담당 부서 목록 조회 (관리자 웹 필터/업무 안내용)"""
+    supabase = get_supabase()
+    result = await supabase.table("departments").select("*").order("id").execute()
+    return result.data
+
 @app.get("/get-reports/{kakao_id}")
 async def get_my_reports(kakao_id: str):
     """내 민원만 조회"""
@@ -124,6 +151,9 @@ async def get_my_reports(kakao_id: str):
 @app.post("/update-status/{report_id}")
 async def update_status(report_id: int, status: str = Form(...)):
     """민원 상태 변경 (pending, processing, completed)"""
+    if status not in ["pending", "processing", "completed"]:
+        raise HTTPException(status_code=400, detail="지원하지 않는 상태값입니다.")
+
     supabase = get_supabase()
     update_data = {"status": status}
     if status == "completed":
@@ -133,6 +163,20 @@ async def update_status(report_id: int, status: str = Form(...)):
     if not result.data:
         raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
     return {"success": True, "status": status}
+
+@app.post("/resolve-report/{report_id}")
+async def resolve_report(report_id: int):
+    """관리자 웹 호환용: 민원을 처리 완료 상태로 변경"""
+    supabase = get_supabase()
+    update_data = {
+        "status": "completed",
+        "resolved_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    result = await supabase.table("complaints").update(update_data).eq("id", report_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+    return {"success": True, "status": "completed"}
 
 @app.post("/stt-only")
 async def stt_only(file: UploadFile = File(...)):
@@ -174,6 +218,10 @@ async def submit_complaint(
 ):
     """최종 민원 제출 및 DB 저장"""
     supabase = get_supabase()
+    if complaint_type == "admin_task":
+        complaint_type = "admin"
+    if complaint_type not in ["field", "admin"]:
+        complaint_type = "field"
 
     # 1. 유저 ID 확보
     user_id = await get_or_create_user(kakao_id, nickname)

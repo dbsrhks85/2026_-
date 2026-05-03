@@ -117,7 +117,11 @@ flutter run
 | `GET` | `/health` | 서버 상태 확인 |
 | `POST` | `/stt-only` | 음성 → 텍스트 변환 (STT만) |
 | `POST` | `/submit-complaint` | 텍스트 → NLP 분류 + DB 저장 |
-| `GET` | `/complaints` | 전체 민원 목록 조회 |
+| `GET` | `/get-reports` | 전체 민원 목록 조회 |
+| `GET` | `/get-reports/{kakao_id}` | 사용자별 민원 목록 조회 |
+| `GET` | `/get-departments` | 담당 부서 목록 조회 |
+| `POST` | `/update-status/{report_id}` | 민원 상태 변경 |
+| `POST` | `/resolve-report/{report_id}` | 민원 처리 완료 |
 
 ---
 

@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS complaints (
     category     VARCHAR(50),
     department   VARCHAR(50) REFERENCES departments(key),
     
-    -- [추가] 현장(field) vs 행정/비현장(admin_task) 구분
-    complaint_type VARCHAR(20) DEFAULT 'field' CHECK (complaint_type IN ('field', 'admin_task')),
+    -- [추가] 현장(field) vs 행정(admin) 구분
+    complaint_type VARCHAR(20) DEFAULT 'field' CHECK (complaint_type IN ('field', 'admin')),
     
     -- [수정] 상태값 단계 확정 (기존과 동일하지만 명시적 확인)
     status       VARCHAR(20) DEFAULT 'pending' 
@@ -52,6 +52,40 @@ CREATE TABLE IF NOT EXISTS complaints (
     created_at   TIMESTAMPTZ DEFAULT NOW(),
     resolved_at  TIMESTAMPTZ
 );
+
+-- 기존 테이블을 쓰는 경우를 위한 컬럼/제약 보정
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS complaint_type VARCHAR(20) DEFAULT 'field';
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS attachment_urls TEXT[] DEFAULT '{}';
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS attachment_note TEXT;
+
+UPDATE complaints
+SET complaint_type = 'admin'
+WHERE complaint_type = 'admin_task';
+
+UPDATE complaints
+SET complaint_type = 'field'
+WHERE complaint_type IS NULL
+   OR complaint_type NOT IN ('field', 'admin');
+
+DO $$
+DECLARE
+    constraint_name TEXT;
+BEGIN
+    FOR constraint_name IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'complaints'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%complaint_type%'
+    LOOP
+        EXECUTE format('ALTER TABLE complaints DROP CONSTRAINT %I', constraint_name);
+    END LOOP;
+
+    ALTER TABLE complaints
+        ADD CONSTRAINT complaints_complaint_type_check
+        CHECK (complaint_type IN ('field', 'admin'));
+END $$;
 
 -- 인덱스 추가 (타입별 필터링 성능 향상)
 CREATE INDEX IF NOT EXISTS idx_complaints_type   ON complaints(complaint_type);
