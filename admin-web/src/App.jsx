@@ -109,6 +109,7 @@ function App() {
   const [departmentFilter, setDepartmentFilter] = useState('all');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [selectedReport, setSelectedReport] = useState(null);
 
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -449,6 +450,11 @@ function App() {
                     </span>
                   </div>
 
+                  {/* 작성자 정보 */}
+                  <div className="card-user-info">
+                    <span className="user-nickname">👤 {report.nickname}</span>
+                  </div>
+
                   {/* 제목 */}
                   <p className="card-title">
                     {report.title}
@@ -470,6 +476,14 @@ function App() {
                     📍 {report.address || '위치 정보 없음'}
                   </div>
 
+                  {/* 첨부파일 요약 */}
+                  {report.attachment_urls?.length > 0 && (
+                    <div className="card-attachments-summary">
+                      📎 첨부파일: {report.attachment_urls[0].split(/[\\/]/).pop()}
+                      {report.attachment_urls.length > 1 && ` 외 ${report.attachment_urls.length - 1}건`}
+                    </div>
+                  )}
+
                   {/* 업무 */}
                   <div className="task-box">
                     <div className="task-title">
@@ -486,18 +500,30 @@ function App() {
                     ))}
                   </div>
 
-                  {/* 버튼 (대기 중일 때만 표시) */}
-                  {report.status === 'pending' && (
+                  {/* 하단 버튼 영역 */}
+                  <div className="card-actions">
                     <button
-                      className="resolve-btn"
+                      className="detail-view-btn"
                       onClick={(e) => {
                         e.stopPropagation();
-                        resolveReport(report.id);
+                        setSelectedReport(report);
                       }}
                     >
-                      처리 완료
+                      자세히 보기
                     </button>
-                  )}
+
+                    {report.status === 'pending' && (
+                      <button
+                        className="resolve-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          resolveReport(report.id);
+                        }}
+                      >
+                        처리 완료
+                      </button>
+                    )}
+                  </div>
                   
                   {/* 처리 완료 라벨 (완료 상태일 때 표시) */}
                   {report.status === 'completed' && (
@@ -517,7 +543,118 @@ function App() {
           </div>
         </aside>
       </div>
+
+      {/* 민원 상세 모달 */}
+      {selectedReport && (
+        <div className="modal-overlay" onClick={() => setSelectedReport(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-area">
+                <span className="modal-category">
+                  {getCat(selectedReport.category).icon} {getCat(selectedReport.category).label}
+                </span>
+                <h2 className="modal-title">{selectedReport.title}</h2>
+              </div>
+              <button className="modal-close" onClick={() => setSelectedReport(null)}>✕</button>
+            </div>
+
+            <div className="modal-body">
+              <section className="modal-section">
+                <h3 className="section-title">작성자 정보</h3>
+                <div className="info-grid">
+                  <div className="info-item">
+                    <span className="info-label">닉네임</span>
+                    <span className="info-value">{selectedReport.nickname}</span>
+                  </div>
+                  <div className="info-item">
+                    <span className="info-label">접수 일시</span>
+                    <span className="info-value">{formatTime(selectedReport.created_at)}</span>
+                  </div>
+                  <div className="info-item">
+                    <span className="info-label">민원 유형</span>
+                    <span className="info-value">{selectedReport.complaint_type === 'field' ? '현장 민원' : '행정/비현장'}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section className="modal-section">
+                <h3 className="section-title">민원 내용 (원본 텍스트)</h3>
+                <div className="stt-text-box">
+                  {selectedReport.stt_text || "내용이 없습니다."}
+                </div>
+              </section>
+
+              <section className="modal-section">
+                <h3 className="section-title">상세 주소</h3>
+                <div className="address-box">
+                  📍 {selectedReport.address || "주소 정보 없음"}
+                </div>
+              </section>
+
+              <section className="modal-section">
+                <div className="section-header-flex">
+                  <h3 className="section-title">첨부 파일 ({selectedReport.attachment_urls?.length || 0})</h3>
+                  {selectedReport.attachment_urls?.length > 0 && (
+                    <button 
+                      className="download-all-btn"
+                      onClick={() => window.open(`${API_URL}/download-attachments/${selectedReport.id}`, '_blank')}
+                    >
+                      📦 전체 다운로드 (ZIP)
+                    </button>
+                  )}
+                </div>
+                
+                {selectedReport.attachment_urls?.length > 0 ? (
+                  <div className="attachment-grid">
+                    {selectedReport.attachment_urls.map((url, idx) => {
+                      const fileName = url.split(/[\\/]/).pop();
+                      const fileUrl = url.startsWith('http') ? url : `${API_URL}/uploads/${fileName}`;
+                      const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName);
+
+                      return (
+                        <div key={idx} className="attachment-item">
+                          {isImage ? (
+                            <div className="attachment-preview" onClick={() => window.open(fileUrl, '_blank')}>
+                              <img src={fileUrl} alt={`attachment-${idx}`} />
+                            </div>
+                          ) : (
+                            <div className="attachment-file-icon" onClick={() => window.open(fileUrl, '_blank')}>
+                              📄
+                            </div>
+                          )}
+                          <span className="attachment-name" title={fileName}>{fileName}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="no-attachments">첨부파일이 없습니다.</div>
+                )}
+              </section>
+            </div>
+
+            <div className="modal-footer">
+              {selectedReport.status === 'pending' ? (
+                <button 
+                  className="modal-resolve-btn"
+                  onClick={() => {
+                    resolveReport(selectedReport.id);
+                    setSelectedReport(null);
+                  }}
+                >
+                  민원 처리 완료
+                </button>
+              ) : (
+                <div className="modal-resolved-badge">
+                  ✅ 처리 완료됨 ({formatTime(selectedReport.resolved_at)})
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
+
   );
 }
 
