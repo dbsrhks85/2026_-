@@ -6,6 +6,8 @@ import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:dio/dio.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:io';
 import 'dart:async';
 import 'services/audio_normalizer.dart';
@@ -15,6 +17,20 @@ import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:kakao_map_plugin/kakao_map_plugin.dart';
 import 'map_picker_page.dart';
+
+bool _firebaseReady = false;
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  if (!_firebaseReady) {
+    try {
+      await Firebase.initializeApp();
+      _firebaseReady = true;
+    } catch (_) {
+      return;
+    }
+  }
+}
 
 // ── Cloud Dancer 디자인 시스템 ──────────────────────
 class AppColors {
@@ -39,6 +55,14 @@ class AppColors {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    _firebaseReady = true;
+  } catch (e) {
+    debugPrint('Firebase 초기화 실패: $e');
+  }
 
   // 카카오 로그인 SDK 초기화
   KakaoSdk.init(
@@ -88,6 +112,10 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   User? _kakaoUser;
   List<Map<String, dynamic>> _myReports = [];
   bool _isLoadingMyReports = false;
+  String? _pushToken;
+  StreamSubscription<String>? _pushTokenRefreshSub;
+  StreamSubscription<RemoteMessage>? _foregroundMessageSub;
+  StreamSubscription<RemoteMessage>? _messageOpenedSub;
 
   String _locationMessage = AppMessages.locationLoading;
   bool _isRecording = false;
@@ -149,6 +177,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     _audioRecorder = AudioRecorder();
     _audioPlayer = AudioPlayer();
     _initialized = true;
+    await _initializePushNotifications();
     // GPS 자동 취득 제거 — 현장 민원 위치 동의 시점에만 취득
   }
 
@@ -157,6 +186,9 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     _pulseController.dispose();
     _waveController.dispose();
     _amplitudeSub?.cancel();
+    _pushTokenRefreshSub?.cancel();
+    _foregroundMessageSub?.cancel();
+    _messageOpenedSub?.cancel();
     if (_initialized) {
       _audioRecorder.dispose();
       _audioPlayer.dispose();
@@ -181,12 +213,93 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
         _kakaoUser = user;
       });
       _showSnack('${_kakaoNickname(user)}님 환영합니다!');
+      await _registerPushToken(user);
 
       // 로그인 후 서버에 유저 정보 등록 (옵션)
       // _registerUserToServer(user);
     } catch (e) {
       debugPrint('카카오 로그인 에러: $e');
       _showSnack('카카오 로그인에 실패했습니다. ($e)');
+    }
+  }
+
+  Future<void> _initializePushNotifications() async {
+    if (!_firebaseReady) {
+      debugPrint('Firebase가 초기화되지 않아 푸쉬 알림을 비활성화합니다.');
+      return;
+    }
+
+    try {
+      final messaging = FirebaseMessaging.instance;
+      final settings = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      debugPrint('푸쉬 알림 권한 상태: ${settings.authorizationStatus}');
+
+      await messaging.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      _pushToken = await messaging.getToken();
+      debugPrint('FCM token: $_pushToken');
+      if (_isLoggedIn && _kakaoUser != null) {
+        await _registerPushToken(_kakaoUser);
+      }
+
+      _pushTokenRefreshSub = messaging.onTokenRefresh.listen((token) async {
+        _pushToken = token;
+        if (_isLoggedIn && _kakaoUser != null) {
+          await _registerPushToken(_kakaoUser);
+        }
+      });
+
+      _foregroundMessageSub = FirebaseMessaging.onMessage.listen((message) {
+        final title = message.notification?.title ?? '민원 상태 알림';
+        final body = message.notification?.body ?? '민원 상태가 변경되었습니다.';
+        if (mounted) {
+          _showSnack('$title\n$body');
+        }
+      });
+
+      _messageOpenedSub = FirebaseMessaging.onMessageOpenedApp.listen((_) {
+        if (_isLoggedIn) {
+          _openMyReportsSheet();
+        }
+      });
+
+      final initialMessage = await messaging.getInitialMessage();
+      if (initialMessage != null && mounted && _isLoggedIn) {
+        _openMyReportsSheet();
+      }
+    } catch (e) {
+      debugPrint('푸쉬 알림 초기화 실패: $e');
+    }
+  }
+
+  Future<void> _registerPushToken(User? user) async {
+    if (user == null || _pushToken == null || _pushToken!.isEmpty) return;
+
+    try {
+      final dio = Dio();
+      final formData = FormData.fromMap({
+        'kakao_id': user.id.toString(),
+        'nickname': _kakaoNickname(user),
+        'push_token': _pushToken,
+      });
+
+      await dio.post(
+        '$_kServerUrl/register-push-token',
+        data: formData,
+        options: Options(receiveTimeout: const Duration(seconds: 15)),
+      );
+      debugPrint('푸쉬 토큰 등록 완료');
+    } catch (e) {
+      debugPrint('푸쉬 토큰 등록 실패: $e');
     }
   }
 

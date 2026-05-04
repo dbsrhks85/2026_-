@@ -23,6 +23,7 @@ import uuid
 import json
 import zipfile
 import io
+import asyncio
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -39,6 +40,14 @@ from stt_engine import transcribe_audio
 from nlp_engine import classify_complaint
 from messages import ApiMessages
 
+try:
+    import firebase_admin
+    from firebase_admin import credentials, messaging
+except ImportError:
+    firebase_admin = None
+    credentials = None
+    messaging = None
+
 # .env 파일 로드
 load_dotenv()
 
@@ -48,6 +57,7 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_supabase()   # 🚀 서버 시작: DB 클라이언트 초기화
+    init_firebase_admin()   # 🔔 푸쉬 알림용 Firebase Admin 초기화
     yield
 
 app = FastAPI(
@@ -78,6 +88,7 @@ KAKAO_REST_API_KEY = (
     or os.getenv("KAKAO_API_KEY")
     or os.getenv("KAKAO_MAP_REST_API_KEY")
 )
+FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
 # ─────────────────────────────────────────
 # 내부 유틸: 유저 관리
@@ -130,6 +141,104 @@ async def get_or_create_user(kakao_id: str, nickname: str = None) -> int:
     }, on_conflict="kakao_id").execute()
 
     return new_user.data[0]["id"]
+
+
+def init_firebase_admin() -> bool:
+    """Firebase Admin SDK 초기화. 설정이 없으면 푸쉬만 비활성화."""
+    if firebase_admin is None or credentials is None:
+        print("[push] firebase-admin package is not installed. Push disabled.")
+        return False
+    if firebase_admin._apps:
+        return True
+    if not FIREBASE_CREDENTIALS_PATH:
+        print("[push] FIREBASE_CREDENTIALS_PATH is not set. Push disabled.")
+        return False
+    if not os.path.exists(FIREBASE_CREDENTIALS_PATH):
+        print(f"[push] Firebase credentials not found: {FIREBASE_CREDENTIALS_PATH}")
+        return False
+
+    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
+    firebase_admin.initialize_app(cred)
+    print("[push] Firebase Admin initialized.")
+    return True
+
+
+def status_push_message(status: str, title: str | None, rejection_reason: str | None = None):
+    complaint_title = title or "접수하신 민원"
+    if status == "processing":
+        return (
+            "민원이 수락되었습니다",
+            f"'{complaint_title}' 민원이 처리 중으로 변경되었습니다.",
+        )
+    if status == "completed":
+        return (
+            "민원 처리가 완료되었습니다",
+            f"'{complaint_title}' 민원 처리가 완료되었습니다.",
+        )
+    if status == "rejected":
+        reason = rejection_reason or "사유 미입력"
+        return (
+            "민원이 반려되었습니다",
+            f"'{complaint_title}' 민원이 반려되었습니다. 사유: {reason}",
+        )
+    return ("민원 상태가 변경되었습니다", f"'{complaint_title}' 상태가 변경되었습니다.")
+
+
+def send_push_to_token(push_token: str, title: str, body: str, data: dict | None = None) -> str | None:
+    """단일 FCM 토큰으로 알림 발송"""
+    if not push_token:
+        return None
+    if not init_firebase_admin() or messaging is None:
+        return None
+
+    message = messaging.Message(
+        notification=messaging.Notification(title=title, body=body),
+        data={k: str(v) for k, v in (data or {}).items() if v is not None},
+        android=messaging.AndroidConfig(
+            priority="high",
+        ),
+        token=push_token,
+    )
+    return messaging.send(message)
+
+
+async def send_status_push(report_id: int, status: str, rejection_reason: str | None = None):
+    """민원 상태 변경 결과를 작성자 기기로 푸쉬 발송"""
+    try:
+        supabase = get_supabase()
+        report_res = await supabase.table("complaints").select(
+            "id, title, user_id, users(push_token)"
+        ).eq("id", report_id).execute()
+        if not report_res.data:
+            return
+
+        report = report_res.data[0]
+        user = report.get("users") or {}
+        push_token = user.get("push_token")
+        if not push_token:
+            print(f"[push] no push token for report_id={report_id}")
+            return
+
+        push_title, push_body = status_push_message(
+            status,
+            report.get("title"),
+            rejection_reason,
+        )
+        response = await asyncio.to_thread(
+            send_push_to_token,
+            push_token,
+            push_title,
+            push_body,
+            {
+                "type": "complaint_status",
+                "report_id": report_id,
+                "status": status,
+                "rejection_reason": rejection_reason or "",
+            },
+        )
+        print(f"[push] sent report_id={report_id} status={status}: {response}")
+    except Exception as e:
+        print(f"[push] failed report_id={report_id} status={status}: {e}")
 
 
 def reverse_geocode_address(lat: float, lng: float) -> str | None:
@@ -236,6 +345,26 @@ async def get_my_reports(kakao_id: str):
     result = await supabase.table("complaints").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
     return result.data
 
+@app.post("/register-push-token")
+async def register_push_token(
+    kakao_id: str = Form(...),
+    push_token: str = Form(...),
+    nickname: str = Form(default=None),
+):
+    """사용자 기기의 FCM push token 저장"""
+    if not push_token.strip():
+        raise HTTPException(status_code=400, detail="push_token이 필요합니다.")
+
+    supabase = get_supabase()
+    user_id = await get_or_create_user(kakao_id, nickname)
+    result = await supabase.table("users").update({
+        "push_token": push_token.strip()
+    }).eq("id", user_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+    return {"success": True}
+
 @app.post("/update-status/{report_id}")
 async def update_status(
     report_id: int, 
@@ -263,6 +392,9 @@ async def update_status(
     result = await supabase.table("complaints").update(update_data).eq("id", report_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+
+    if status in ["processing", "completed", "rejected"]:
+        await send_status_push(report_id, status, rejection_reason)
     return {"success": True, "status": status}
 
 @app.post("/resolve-report/{report_id}")
@@ -277,6 +409,8 @@ async def resolve_report(report_id: int):
     result = await supabase.table("complaints").update(update_data).eq("id", report_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail=ApiMessages.REPORT_NOT_FOUND)
+
+    await send_status_push(report_id, "completed")
     return {"success": True, "status": "completed"}
 
 @app.post("/stt-only")

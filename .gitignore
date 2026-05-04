@@ -2,6 +2,9 @@
 .env
 *.env
 secrets.json
+firebase-service-account*.json
+backend-server/firebase-service-account*.json
+mobile-app/android/app/google-services.json
 config.py
 
 # ===== Python =====

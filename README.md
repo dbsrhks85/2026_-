@@ -31,6 +31,7 @@ copy .env.example .env       # Windows
 | `OPENAI_API_KEY` | Whisper + GPT-4o mini 키 | [platform.openai.com](https://platform.openai.com/api-keys) |
 | `KAKAO_MAP_API_KEY` | 지도 표시용 | [developers.kakao.com](https://developers.kakao.com) |
 | `KAKAO_REST_API_KEY` | 좌표를 주소로 변환하는 카카오 Local API 키 | [developers.kakao.com](https://developers.kakao.com) |
+| `FIREBASE_CREDENTIALS_PATH` | 푸쉬알림 발송용 Firebase 서비스 계정 JSON 경로 | Firebase Console → Project settings → Service accounts |
 | `SUPABASE_URL` | DB 주소 | Supabase → Settings → API |
 | `SUPABASE_KEY` | DB 인증 키 | Supabase → Settings → API |
 
