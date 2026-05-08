@@ -23,12 +23,41 @@ class _MapPickerPageState extends State<MapPickerPage> {
   late double _selectedLat;
   late double _selectedLng;
   bool _isMapMoving = false;
+  late bool _hasValidMapPosition;
+  String? _coordinateWarning;
 
   @override
   void initState() {
     super.initState();
     _selectedLat = widget.initialLat;
     _selectedLng = widget.initialLng;
+    _hasValidMapPosition = _isValidLatLng(_selectedLat, _selectedLng);
+    if (!_hasValidMapPosition) {
+      _selectedLat = 37.8813;
+      _selectedLng = 127.7298;
+      _coordinateWarning = '초기 위치가 올바르지 않아 기본 위치로 이동했습니다.';
+      _hasValidMapPosition = true;
+    }
+  }
+
+  bool _isValidLatLng(double? lat, double? lng) {
+    return lat != null &&
+        lng != null &&
+        lat.isFinite &&
+        lng.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lng >= -180 &&
+        lng <= 180;
+  }
+
+  void _showInvalidCoordinateSnack() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('지도 좌표를 확인하지 못했습니다. 지도를 다시 움직여주세요.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
@@ -39,7 +68,7 @@ class _MapPickerPageState extends State<MapPickerPage> {
         children: [
           // ── 1. 전체화면 카카오맵 (스크롤 충돌 없음)
           KakaoMap(
-            center: LatLng(widget.initialLat, widget.initialLng),
+            center: LatLng(_selectedLat, _selectedLng),
             onMapCreated: (controller) {},
             onDragChangeCallback: (latLng, zoomLevel, dragType) {
               // 지도 이동 시작/중 — 핀 살짝 위로 float
@@ -49,10 +78,20 @@ class _MapPickerPageState extends State<MapPickerPage> {
             },
             onCameraIdle: (latLng, zoomLevel) {
               // 지도 멈춤 — 중앙 좌표 저장
+              if (!_isValidLatLng(latLng.latitude, latLng.longitude)) {
+                setState(() {
+                  _isMapMoving = false;
+                  _hasValidMapPosition = false;
+                  _coordinateWarning = '지도 위치를 불러오는 중입니다. 잠시 후 다시 움직여주세요.';
+                });
+                return;
+              }
               setState(() {
                 _selectedLat = latLng.latitude;
                 _selectedLng = latLng.longitude;
                 _isMapMoving = false;
+                _hasValidMapPosition = true;
+                _coordinateWarning = null;
               });
             },
           ),
@@ -189,9 +228,12 @@ class _MapPickerPageState extends State<MapPickerPage> {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(
-                      '중앙 핀 위치가 주소로 저장됩니다',
+                      _coordinateWarning ?? '중앙 핀 위치가 주소로 저장됩니다',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.78),
+                        color: (_coordinateWarning == null
+                            ? Colors.white.withOpacity(0.78)
+                            : const Color(0xFFFFD6D6)),
                         fontSize: 12,
                         fontWeight: FontWeight.w500,
                       ),
@@ -203,12 +245,27 @@ class _MapPickerPageState extends State<MapPickerPage> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: () => Navigator.pop(
-                        context,
-                        LatLng(_selectedLat, _selectedLng),
-                      ),
+                      onPressed: _hasValidMapPosition
+                          ? () {
+                              if (!_isValidLatLng(_selectedLat, _selectedLng)) {
+                                setState(() {
+                                  _hasValidMapPosition = false;
+                                  _coordinateWarning =
+                                      '지도 좌표를 확인하지 못했습니다. 지도를 다시 움직여주세요.';
+                                });
+                                _showInvalidCoordinateSnack();
+                                return;
+                              }
+                              Navigator.pop(
+                                context,
+                                LatLng(_selectedLat, _selectedLng),
+                              );
+                            }
+                          : _showInvalidCoordinateSnack,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFE05252),
+                        backgroundColor: _hasValidMapPosition
+                            ? const Color(0xFFE05252)
+                            : Colors.grey.shade600,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(

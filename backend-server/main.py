@@ -24,6 +24,7 @@ import json
 import zipfile
 import io
 import asyncio
+import math
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -280,6 +281,26 @@ def reverse_geocode_address(lat: float, lng: float) -> str | None:
     address = first.get("address") or {}
     return road_address.get("address_name") or address.get("address_name")
 
+
+def is_valid_lat_lng(lat: float | None, lng: float | None) -> bool:
+    return (
+        lat is not None
+        and lng is not None
+        and math.isfinite(lat)
+        and math.isfinite(lng)
+        and -90 <= lat <= 90
+        and -180 <= lng <= 180
+    )
+
+
+def validate_optional_lat_lng(lat: float | None, lng: float | None) -> None:
+    if lat is None and lng is None:
+        return
+    if lat is None or lng is None:
+        raise HTTPException(status_code=400, detail="lat/lng는 함께 전달되어야 합니다.")
+    if not is_valid_lat_lng(lat, lng):
+        raise HTTPException(status_code=400, detail="유효하지 않은 좌표입니다.")
+
 # ─────────────────────────────────────────
 # API 엔드포인트
 # ─────────────────────────────────────────
@@ -333,12 +354,14 @@ async def get_departments():
 @app.get("/reverse-geocode")
 async def reverse_geocode(lat: float, lng: float):
     """좌표를 사람이 읽을 수 있는 주소로 변환"""
+    if not is_valid_lat_lng(lat, lng):
+        raise HTTPException(status_code=400, detail="유효하지 않은 좌표입니다.")
     if not KAKAO_REST_API_KEY:
         raise HTTPException(status_code=500, detail="KAKAO_REST_API_KEY가 설정되지 않았습니다.")
 
     address = reverse_geocode_address(lat, lng)
     if not address:
-        raise HTTPException(status_code=502, detail="주소 변환에 실패했습니다.")
+        return {"success": False, "address": None}
     return {"success": True, "address": address}
 
 @app.get("/get-reports/{kakao_id}")
@@ -469,6 +492,7 @@ async def submit_complaint(
 ):
     """최종 민원 제출 및 DB 저장"""
     supabase = get_supabase()
+    validate_optional_lat_lng(lat, lng)
     if complaint_type == "admin_task":
         complaint_type = "admin"
     if complaint_type not in ["field", "admin"]:

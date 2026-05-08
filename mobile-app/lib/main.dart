@@ -501,7 +501,23 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     return (nickname == null || nickname.isEmpty) ? '사용자' : nickname;
   }
 
+  bool _isValidLatLng(double? lat, double? lng) {
+    return lat != null &&
+        lng != null &&
+        lat.isFinite &&
+        lng.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lng >= -180 &&
+        lng <= 180;
+  }
+
   Future<String?> _reverseGeocode(double lat, double lng) async {
+    if (!_isValidLatLng(lat, lng)) {
+      debugPrint('주소 변환 생략: 유효하지 않은 좌표 lat=$lat, lng=$lng');
+      return null;
+    }
+
     try {
       final response = await _apiClient.dio.get(
         '/reverse-geocode',
@@ -509,6 +525,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
         options: Options(receiveTimeout: const Duration(seconds: 10)),
       );
       final data = Map<String, dynamic>.from(response.data as Map);
+      if (data['success'] == false) return null;
       final address = data['address']?.toString().trim();
       return (address == null || address.isEmpty) ? null : address;
     } catch (e) {
@@ -1181,6 +1198,13 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                                   ),
                                 );
                                 if (result != null) {
+                                  if (!_isValidLatLng(
+                                    result.latitude,
+                                    result.longitude,
+                                  )) {
+                                    _showSnack('지도 좌표를 확인하지 못했습니다. 다시 시도해주세요.');
+                                    return;
+                                  }
                                   setModalState(() {
                                     isLoadingGps = true;
                                   });
@@ -1276,6 +1300,15 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                                       ),
                                     );
                                     if (result != null) {
+                                      if (!_isValidLatLng(
+                                        result.latitude,
+                                        result.longitude,
+                                      )) {
+                                        _showSnack(
+                                          '지도 좌표를 확인하지 못했습니다. 다시 시도해주세요.',
+                                        );
+                                        return;
+                                      }
                                       setModalState(() {
                                         isLoadingGps = true;
                                       });
@@ -1376,6 +1409,10 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                     child: ElevatedButton.icon(
                       onPressed: () {
                         Navigator.pop(ctx);
+                        final hasValidLocation = _isValidLatLng(
+                          selectedLat,
+                          selectedLng,
+                        );
                         _submitComplaintWithText(
                           sttText: textController.text,
                           complaintType: currentType,
@@ -1384,15 +1421,21 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                           title: nlpSuggestion?['title'],
                           attachedFiles: attachedFiles,
                           selectedLat:
-                              (currentType == 'field' && locationConsented)
+                              (currentType == 'field' &&
+                                  locationConsented &&
+                                  hasValidLocation)
                               ? selectedLat
                               : null,
                           selectedLng:
-                              (currentType == 'field' && locationConsented)
+                              (currentType == 'field' &&
+                                  locationConsented &&
+                                  hasValidLocation)
                               ? selectedLng
                               : null,
                           selectedAddress:
-                              (currentType == 'field' && locationConsented)
+                              (currentType == 'field' &&
+                                  locationConsented &&
+                                  hasValidLocation)
                               ? selectedAddress
                               : null,
                         );
@@ -1477,12 +1520,15 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     setState(() => _isSubmitting = true);
 
     try {
+      final hasValidLocation = _isValidLatLng(selectedLat, selectedLng);
       // 위치 정보: field+동의 시 드래그 좌표, admin 또는 거절 시 null
       final mapData = <String, dynamic>{
         'stt_text': sttText,
-        if (selectedLat != null) 'lat': selectedLat.toString(),
-        if (selectedLng != null) 'lng': selectedLng.toString(),
-        if (selectedAddress != null && selectedAddress.isNotEmpty)
+        if (hasValidLocation) 'lat': selectedLat.toString(),
+        if (hasValidLocation) 'lng': selectedLng.toString(),
+        if (hasValidLocation &&
+            selectedAddress != null &&
+            selectedAddress.isNotEmpty)
           'address': selectedAddress,
         if (complaintType != null) 'complaint_type': complaintType,
         if (category != null) 'category': category,
