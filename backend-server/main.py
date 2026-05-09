@@ -42,6 +42,7 @@ from nlp_engine import classify_complaint
 from messages import ApiMessages
 from core.admin_auth import require_admin
 from core.security import get_current_user_payload
+from routers.admin_auth import router as admin_auth_router
 from routers.auth import router as auth_router
 from routers.me import router as me_router
 
@@ -82,6 +83,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(me_router)
+app.include_router(admin_auth_router)
 
 # 업로드 디렉토리 및 설정
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
@@ -558,7 +560,7 @@ async def submit_complaint(
         raise HTTPException(status_code=500, detail=f"데이터 저장 실패: {str(e)}")
 
 @app.get("/download-attachments/{report_id}")
-async def download_attachments(report_id: int):
+async def download_attachments(report_id: int, _: bool = Depends(require_admin)):
     """특정 민원의 모든 첨부파일을 ZIP으로 압축하여 다운로드"""
     supabase = get_supabase()
     

@@ -39,15 +39,33 @@ def _sign(message: str) -> str:
 
 def create_access_token(user: dict[str, Any]) -> str:
     now = datetime.now(timezone.utc)
-    payload = {
+    return create_signed_token({
         "iss": JWT_ISSUER,
         "sub": str(user["id"]),
+        "type": "user",
         "user_id": user["id"],
         "kakao_id": user["kakao_id"],
         "role": user.get("role", "user"),
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
-    }
+    })
+
+
+def create_admin_access_token(admin: dict[str, Any]) -> str:
+    now = datetime.now(timezone.utc)
+    return create_signed_token({
+        "iss": JWT_ISSUER,
+        "sub": f"admin:{admin['id']}",
+        "type": "admin",
+        "admin_id": admin["id"],
+        "username": admin["username"],
+        "role": admin.get("role", "admin"),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
+    })
+
+
+def create_signed_token(payload: dict[str, Any]) -> str:
     header = {"alg": "HS256", "typ": "JWT"}
     signing_input = ".".join(
         [
@@ -99,5 +117,7 @@ async def get_current_user_payload(
 ) -> dict[str, Any]:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return decode_access_token(credentials.credentials)
-
+    payload = decode_access_token(credentials.credentials)
+    if payload.get("type", "user") != "user":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User token required")
+    return payload

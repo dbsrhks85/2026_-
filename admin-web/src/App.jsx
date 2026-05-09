@@ -6,8 +6,11 @@ import './index.css';
 // ─────────────────────────────────────────
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY || '';
-const adminHeaders = () =>
-  ADMIN_API_KEY ? { 'X-Admin-Api-Key': ADMIN_API_KEY } : {};
+const ADMIN_ACCESS_TOKEN_KEY = 'adminAccessToken';
+const adminHeaders = (accessToken) => ({
+  ...(ADMIN_API_KEY ? { 'X-Admin-Api-Key': ADMIN_API_KEY } : {}),
+  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+});
 
 // ─────────────────────────────────────────
 // 민원 카테고리 (사용자 입력 기준)
@@ -105,6 +108,14 @@ const SearchIcon = () => (
 function App() {
   const { kakao } = window;
 
+  const [authChecked, setAuthChecked] = useState(false);
+  const [accessToken, setAccessToken] = useState(
+    () => localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) || ''
+  );
+  const [admin, setAdmin] = useState(null);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState('pending'); // 'pending' or 'completed'
   const [reports, setReports] = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -120,6 +131,108 @@ function App() {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersRef = useRef({});
+
+  const clearAdminSession = useCallback(() => {
+    localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
+    setAccessToken('');
+    setAdmin(null);
+    setReports([]);
+    setSelectedReport(null);
+  }, []);
+
+  const handleUnauthorized = useCallback(() => {
+    clearAdminSession();
+    setLoginError('로그인이 만료되었습니다. 다시 로그인해주세요.');
+  }, [clearAdminSession]);
+
+  const adminFetch = useCallback(async (path, options = {}) => {
+    const headers = {
+      ...adminHeaders(accessToken),
+      ...(options.headers || {}),
+    };
+    const res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+    });
+    if (res.status === 401 || res.status === 403) {
+      handleUnauthorized();
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res;
+  }, [accessToken, handleUnauthorized]);
+
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    if (loginLoading) return;
+
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const formData = new FormData();
+      formData.append('username', loginForm.username.trim());
+      formData.append('password', loginForm.password);
+
+      const res = await fetch(`${API_URL}/admin/auth/login`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || '로그인에 실패했습니다.');
+      }
+
+      localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, data.access_token);
+      setAccessToken(data.access_token);
+      setAdmin(data.admin);
+      setLoginForm({ username: '', password: '' });
+    } catch (e) {
+      setLoginError(e.message || '로그인에 실패했습니다.');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (accessToken) {
+        await fetch(`${API_URL}/admin/auth/logout`, {
+          method: 'POST',
+          headers: adminHeaders(accessToken),
+        });
+      }
+    } catch (e) {
+      console.warn('관리자 로그아웃 요청 실패:', e);
+    } finally {
+      clearAdminSession();
+    }
+  };
+
+  useEffect(() => {
+    if (!accessToken) {
+      setAuthChecked(true);
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`${API_URL}/admin/auth/me`, {
+      headers: adminHeaders(accessToken),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (!cancelled) setAdmin(data.admin);
+      })
+      .catch(() => {
+        if (!cancelled) clearAdminSession();
+      })
+      .finally(() => {
+        if (!cancelled) setAuthChecked(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, clearAdminSession]);
 
   // 부서 규칙 (Key-Value 맵)
   const deptRules = useMemo(() => {
@@ -160,11 +273,10 @@ function App() {
 
   // 민원 로드
   const loadReports = useCallback(async () => {
+    if (!accessToken) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/get-reports`, {
-        headers: adminHeaders(),
-      });
+      const res = await adminFetch('/get-reports');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setReports(Array.isArray(data) ? data : []);
@@ -174,11 +286,11 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accessToken, adminFetch]);
 
   // 지도 init
   useEffect(() => {
-    if (!kakao?.maps) return;
+    if (!authChecked || !accessToken || !admin || !kakao?.maps) return;
 
     kakao.maps.load(() => {
       if (!mapInstanceRef.current && mapRef.current) {
@@ -191,7 +303,7 @@ function App() {
       loadDepartments();
       loadReports();
     });
-  }, [kakao, loadDepartments, loadReports]);
+  }, [kakao, loadDepartments, loadReports, authChecked, accessToken, admin]);
 
   // 데이터 가공
   const processedReports = useMemo(() => {
@@ -320,7 +432,7 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/update-status/${id}`, {
         method: 'POST',
-        headers: adminHeaders(),
+        headers: adminHeaders(accessToken),
         body: formData,
       });
       if (res.ok) {
@@ -349,6 +461,76 @@ function App() {
     mapInstanceRef.current.panTo(target.pos);
   };
 
+  const downloadAllAttachments = async (reportId) => {
+    try {
+      const res = await adminFetch(`/download-attachments/${reportId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `report-${reportId}-attachments.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('첨부파일 다운로드 실패:', e);
+      window.alert('첨부파일 다운로드에 실패했습니다.');
+    }
+  };
+
+  if (!authChecked) {
+    return (
+      <div className="auth-page">
+        <div className="auth-loading">관리자 세션을 확인하는 중입니다.</div>
+      </div>
+    );
+  }
+
+  if (!accessToken || !admin) {
+    return (
+      <div className="auth-page">
+        <form className="auth-panel" onSubmit={handleLogin}>
+          <div className="auth-logo">🏛️</div>
+          <h1 className="auth-title">관리자 로그인</h1>
+          <p className="auth-subtitle">발급된 관리자 계정으로만 접근할 수 있습니다.</p>
+
+          <label className="auth-field">
+            <span>아이디</span>
+            <input
+              value={loginForm.username}
+              onChange={(e) =>
+                setLoginForm((prev) => ({ ...prev, username: e.target.value }))
+              }
+              autoComplete="username"
+              autoFocus
+            />
+          </label>
+
+          <label className="auth-field">
+            <span>비밀번호</span>
+            <input
+              type="password"
+              value={loginForm.password}
+              onChange={(e) =>
+                setLoginForm((prev) => ({ ...prev, password: e.target.value }))
+              }
+              autoComplete="current-password"
+            />
+          </label>
+
+          {loginError && <div className="auth-error">{loginError}</div>}
+
+          <button className="auth-submit" type="submit" disabled={loginLoading}>
+            {loginLoading ? '로그인 중' : '로그인'}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <>
       {loading && <div className="loading-bar" />}
@@ -371,12 +553,19 @@ function App() {
 
         <div className="header-stats">
           <div className="stat-chip total">
+            {admin.name || admin.username}
+          </div>
+          <div className="stat-chip total">
             전체 {reports.length}
           </div>
 
           <div className="stat-chip pending">
             목록 {filteredReports.length}
           </div>
+
+          <button className="logout-btn" onClick={handleLogout}>
+            로그아웃
+          </button>
         </div>
       </header>
 
@@ -715,7 +904,7 @@ function App() {
                   {selectedReport.attachment_urls?.length > 0 && (
                     <button 
                       className="download-all-btn"
-                      onClick={() => window.open(`${API_URL}/download-attachments/${selectedReport.id}`, '_blank')}
+                      onClick={() => downloadAllAttachments(selectedReport.id)}
                     >
                       📦 전체 다운로드 (ZIP)
                     </button>

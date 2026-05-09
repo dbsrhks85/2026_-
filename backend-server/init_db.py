@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_user ON auth_refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_hash ON auth_refresh_tokens(token_hash);
 
+CREATE TABLE IF NOT EXISTS admin_users (
+    id            BIGSERIAL PRIMARY KEY,
+    username      VARCHAR(50) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    name          VARCHAR(100),
+    role          VARCHAR(20) DEFAULT 'admin' CHECK (role IN ('admin', 'super_admin')),
+    is_active     BOOLEAN DEFAULT TRUE,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username);
+CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(is_active);
+
 CREATE TABLE IF NOT EXISTS departments (
     id          BIGSERIAL PRIMARY KEY,
     key         VARCHAR(50) UNIQUE NOT NULL,
