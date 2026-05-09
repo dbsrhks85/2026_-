@@ -136,6 +136,9 @@ function App() {
     tasks: ''
   });
   const [addingDept, setAddingDept] = useState(false);
+  const [deletingDept, setDeletingDept] = useState(null);
+  const [reassignKey, setReassignKey] = useState('');
+  const [affectedReports, setAffectedReports] = useState([]);
 
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -521,22 +524,57 @@ function App() {
     }
   };
 
-  const handleDeleteDepartment = async (id, label) => {
-    if (!window.confirm(`[${label}] 부서를 삭제하시겠습니까? 관련 데이터는 유지되지만 AI 분류에서 제외됩니다.`)) return;
+  const handleDeleteDepartment = (dept) => {
+    const others = departments.filter(d => d.id !== dept.id);
+    if (others.length === 0) {
+      window.alert("최소 하나의 부서는 운영되어야 합니다. 삭제 전 다른 부서를 먼저 추가해 주세요.");
+      return;
+    }
+
+    const affected = processedReports.filter(r => r.department === dept.key);
     
+    if (affected.length === 0) {
+      if (window.confirm(`'${dept.label}' 부서를 삭제하시겠습니까?`)) {
+        setDeletingDept(dept);
+        setReassignKey(others[0].key); // 실제로는 민원이 없어도 API 구조상 필요할 수 있음
+        // 아래 confirmDelete를 직접 호출하거나 간단한 삭제 API 호출
+        setTimeout(() => {
+           setDeletingDept(dept);
+           setReassignKey(others[0].key);
+           confirmDelete(); 
+        }, 0);
+      }
+      return;
+    }
+
+    setAffectedReports(affected);
+    setDeletingDept(dept);
+    setReassignKey(others[0].key);
+  };
+
+  const confirmDelete = async () => {
+    if (!deletingDept || !reassignKey) return;
+
     try {
-      const res = await fetch(`${API_URL}/admin/delete-department/${id}`, {
+      setLoading(true);
+      const res = await fetch(`${API_URL}/admin/delete-department/${deletingDept.id}?reassign_to=${reassignKey}`, {
         method: 'DELETE',
-        headers: adminHeaders(accessToken)
+        headers: adminHeaders(accessToken),
       });
       if (res.ok) {
         await loadDepartments();
+        await loadReports();
+        setDeletingDept(null);
+        setAffectedReports([]);
+        window.alert('부서가 삭제되고 관련 민원이 재배정되었습니다.');
       } else {
-        throw new Error('삭제 실패');
+        const err = await res.json();
+        window.alert(`삭제 실패: ${err.detail}`);
       }
     } catch (e) {
-      console.error(e);
-      window.alert('부서 삭제 중 오류가 발생했습니다.');
+      console.error('부서 삭제 오류:', e);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -998,7 +1036,7 @@ function App() {
                           <td className="td-actions">
                             <button 
                               className="dept-del-btn"
-                              onClick={() => handleDeleteDepartment(dept.id, dept.label)}
+                              onClick={() => handleDeleteDepartment(dept)}
                             >
                               삭제
                             </button>
@@ -1128,6 +1166,58 @@ function App() {
                   {' '}({formatTime(selectedReport.resolved_at)})
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 부서 삭제 및 재배정 모달 (고아 민원 방지) */}
+      {deletingDept && affectedReports.length > 0 && (
+        <div className="modal-overlay" onClick={() => setDeletingDept(null)}>
+          <div className="modal-content delete-modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">⚠️ 부서 삭제 및 잔류 민원 이관</h2>
+              <button className="modal-close" onClick={() => setDeletingDept(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <p className="delete-warning">
+                <strong>{deletingDept.label}</strong> 부서를 삭제하려고 합니다.<br/>
+                현재 이 부서에 담당자가 없는 <strong>{affectedReports.length}건</strong>의 민원이 존재합니다.
+              </p>
+              
+              <div className="affected-list-wrap">
+                <label>이관 대상 민원 ({affectedReports.length}건)</label>
+                <div className="affected-scroll">
+                  {affectedReports.map(r => (
+                    <div key={r.id} className="affected-item">
+                      <span className="affected-id">#{r.id}</span>
+                      <span className="affected-title">{r.title}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="reassign-select-wrap">
+                <label>이관 대상 부서 선택</label>
+                <select 
+                  value={reassignKey} 
+                  onChange={e => setReassignKey(e.target.value)}
+                  className="reassign-select"
+                >
+                  {departments
+                    .filter(d => d.id !== deletingDept.id)
+                    .map(d => (
+                      <option key={d.key} value={d.key}>{d.label}</option>
+                    ))
+                  }
+                </select>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="cancel-btn" onClick={() => setDeletingDept(null)}>취소</button>
+              <button className="confirm-delete-btn" onClick={confirmDelete}>
+                {affectedReports.length}건 이관 및 부서 삭제
+              </button>
             </div>
           </div>
         </div>

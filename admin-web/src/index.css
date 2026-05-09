@@ -1585,6 +1585,23 @@ body {
   white-space: nowrap;
 }
 
+.cancel-btn {
+  padding: 12px 24px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+  background: #f1f5f9;
+  border-color: var(--text-muted);
+}
+
 .nav-item:hover {
   color: var(--accent);
 }
@@ -1843,6 +1860,104 @@ body {
   font-weight: 700;
   color: var(--text-secondary);
   font-size: 14px;
+}
+
+.delete-modal {
+  max-width: 500px;
+}
+
+.delete-warning {
+  background: rgba(239, 68, 68, 0.05);
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.affected-list-wrap {
+  margin-bottom: 20px;
+}
+
+.affected-list-wrap label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 8px;
+}
+
+.affected-scroll {
+  max-height: 150px;
+  overflow-y: auto;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.affected-item {
+  display: flex;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.03);
+  font-size: 12px;
+}
+
+.affected-item:last-child {
+  border-bottom: none;
+}
+
+.affected-id {
+  color: var(--accent);
+  font-weight: 800;
+  min-width: 40px;
+}
+
+.affected-title {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reassign-select-wrap label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 8px;
+}
+
+.reassign-select {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+}
+
+.confirm-delete-btn {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 12px;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.confirm-delete-btn:hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
 }
 
 .dashboard-view-wrapper {

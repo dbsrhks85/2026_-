@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -386,11 +386,32 @@ async def add_department(
         raise HTTPException(status_code=500, detail=f"DB 오류: {str(e)}")
 
 @app.delete("/admin/delete-department/{dept_id}")
-async def delete_department(dept_id: int, _: bool = Depends(require_admin)):
-    """부서 삭제 (관리자 전용)"""
+async def delete_department(
+    dept_id: int, 
+    reassign_to: str = Query(None), # 재배정할 부서의 Key
+    _: bool = Depends(require_admin)
+):
+    """부서 삭제 및 관련 민원 재배정 (관리자 전용)"""
     supabase = get_supabase()
     try:
+        # 1. 삭제할 부서 정보 조회
+        dept_res = await supabase.table("departments").select("key").eq("id", dept_id).execute()
+        if not dept_res.data:
+            raise HTTPException(status_code=404, detail="부서를 찾을 수 없습니다.")
+        
+        old_key = dept_res.data[0]["key"]
+
+        # 2. 민원 재배정 (reassign_to가 지정된 경우)
+        if reassign_to:
+            await supabase.table("complaints").update({"department": reassign_to}).eq("department", old_key).execute()
+        
+        # 3. 부서 삭제
         result = await supabase.table("departments").delete().eq("id", dept_id).execute()
+        
+        if not result.data:
+            # FK 제약 등으로 삭제 실패 시 (reassign_to가 없거나 실패한 경우)
+            raise HTTPException(status_code=400, detail="부서 삭제에 실패했습니다. 해당 부서의 민원을 먼저 모두 이관해야 합니다.")
+            
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB 오류: {str(e)}")
