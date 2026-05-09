@@ -47,7 +47,6 @@ CREATE TABLE IF NOT EXISTS departments (
     id          BIGSERIAL PRIMARY KEY,
     key         VARCHAR(50) UNIQUE NOT NULL,
     label       VARCHAR(100) NOT NULL,
-    icon        VARCHAR(10),
     color       VARCHAR(20),
     keywords    TEXT[], -- 검색용 키워드
     tasks       TEXT[], -- 처리 업무 목록

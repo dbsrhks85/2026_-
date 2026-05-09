@@ -353,6 +353,48 @@ async def get_departments():
     result = await supabase.table("departments").select("*").order("id").execute()
     return result.data
 
+@app.post("/admin/add-department")
+async def add_department(
+    key: str = Form(...),
+    label: str = Form(...),
+    color: str = Form(None),
+    keywords: str = Form(None), # 쉼표로 구분된 문자열
+    tasks: str = Form(None),    # 쉼표로 구분된 문자열
+    _: bool = Depends(require_admin),
+):
+    """부서 추가 (관리자 전용)"""
+    supabase = get_supabase()
+    
+    # 쉼표 구분 문자열을 배열로 변환
+    keyword_list = [k.strip() for k in keywords.split(",")] if keywords else []
+    task_list = [t.strip() for t in tasks.split(",")] if tasks else []
+
+    try:
+        result = await supabase.table("departments").insert({
+            "key": key,
+            "label": label,
+            "color": color,
+            "keywords": keyword_list,
+            "tasks": task_list
+        }).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=500, detail="부서 추가에 실패했습니다.")
+            
+        return {"success": True, "data": result.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB 오류: {str(e)}")
+
+@app.delete("/admin/delete-department/{dept_id}")
+async def delete_department(dept_id: int, _: bool = Depends(require_admin)):
+    """부서 삭제 (관리자 전용)"""
+    supabase = get_supabase()
+    try:
+        result = await supabase.table("departments").delete().eq("id", dept_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB 오류: {str(e)}")
+
 @app.get("/reverse-geocode")
 async def reverse_geocode(lat: float, lng: float):
     """좌표를 사람이 읽을 수 있는 주소로 변환"""

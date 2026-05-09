@@ -127,6 +127,15 @@ function App() {
   const [rejectingReportId, setRejectingReportId] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('접수 내용이 부족합니다');
   const [customReason, setCustomReason] = useState('');
+  const [activeView, setActiveView] = useState('dashboard'); // 'dashboard' | 'departments'
+  const [newDept, setNewDept] = useState({
+    key: '',
+    label: '',
+    color: '#3b82f6',
+    keywords: '',
+    tasks: ''
+  });
+  const [addingDept, setAddingDept] = useState(false);
 
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -481,6 +490,56 @@ function App() {
     }
   };
 
+  const handleAddDepartment = async (e) => {
+    e.preventDefault();
+    if (!newDept.key || !newDept.label) return window.alert('키와 부서명은 필수입니다.');
+    
+    setAddingDept(true);
+    try {
+      const formData = new FormData();
+      Object.entries(newDept).forEach(([k, v]) => formData.append(k, v));
+      
+      const res = await fetch(`${API_URL}/admin/add-department`, {
+        method: 'POST',
+        headers: adminHeaders(accessToken),
+        body: formData
+      });
+      
+      if (res.ok) {
+        await loadDepartments();
+        setNewDept({ key: '', label: '', color: '#3b82f6', keywords: '', tasks: '' });
+        window.alert('부서가 추가되었습니다.');
+      } else {
+        const err = await res.json();
+        throw new Error(err.detail || '추가 실패');
+      }
+    } catch (e) {
+      console.error(e);
+      window.alert(`오류: ${e.message}`);
+    } finally {
+      setAddingDept(false);
+    }
+  };
+
+  const handleDeleteDepartment = async (id, label) => {
+    if (!window.confirm(`[${label}] 부서를 삭제하시겠습니까? 관련 데이터는 유지되지만 AI 분류에서 제외됩니다.`)) return;
+    
+    try {
+      const res = await fetch(`${API_URL}/admin/delete-department/${id}`, {
+        method: 'DELETE',
+        headers: adminHeaders(accessToken)
+      });
+      if (res.ok) {
+        await loadDepartments();
+      } else {
+        throw new Error('삭제 실패');
+      }
+    } catch (e) {
+      console.error(e);
+      window.alert('부서 삭제 중 오류가 발생했습니다.');
+    }
+  };
+
   if (!authChecked) {
     return (
       <div className="auth-page">
@@ -549,6 +608,21 @@ function App() {
           <h1 className="header-title">
             민원 통합 관리 시스템
           </h1>
+
+          <nav className="header-nav">
+            <button 
+              className={`nav-item ${activeView === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setActiveView('dashboard')}
+            >
+              📊 민원 현황
+            </button>
+            <button 
+              className={`nav-item ${activeView === 'departments' ? 'active' : ''}`}
+              onClick={() => setActiveView('departments')}
+            >
+              🏢 부서 관리
+            </button>
+          </nav>
         </div>
 
         <div className="header-stats">
@@ -571,282 +645,373 @@ function App() {
 
       {/* 본문 */}
       <div className="main-container">
-        {/* 지도 */}
-        <div id="map" ref={mapRef}>
-          <div className="map-overlay">
-            실제 처리 부서 기준 운영 중
-          </div>
-        </div>
-
-        {/* 사이드바 */}
-        <aside className={`sidebar${sidebarOpen ? '' : ' sidebar--hidden'}`}>
-          {/* 검색 */}
-          <div className="sidebar-search">
-            <div className="search-input-wrap">
-              <SearchIcon />
-
-              <input
-                className="search-input"
-                placeholder="제목 / 주소 검색"
-                value={searchQuery}
-                onChange={(e) =>
-                  setSearchQuery(e.target.value)
-                }
-              />
+        {/* 대시보드 뷰 */}
+        <div className={`dashboard-view-wrapper ${activeView === 'dashboard' ? '' : 'hidden'}`}>
+          {/* 지도 */}
+          <div id="map" ref={mapRef}>
+            <div className="map-overlay">
+              실제 처리 부서 기준 운영 중
             </div>
           </div>
 
-          {/* 상태 필터 */}
-          <div className="sidebar-status-wrap">
-            <div className="status-menu">
-              <button 
-                className={`status-menu-item ${statusFilter === 'pending' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('pending')}
-              >
-                접수 중
-              </button>
-              <button 
-                className={`status-menu-item ${statusFilter === 'processing' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('processing')}
-              >
-                처리 중
-              </button>
-              <button 
-                className={`status-menu-item ${statusFilter === 'completed' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('completed')}
-              >
-                처리 완료
-              </button>
-              <button 
-                className={`status-menu-item ${statusFilter === 'rejected' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('rejected')}
-              >
-                반려됨
-              </button>
-            </div>
-          </div>
+          {/* 사이드바 */}
+          <aside className={`sidebar${sidebarOpen ? '' : ' sidebar--hidden'}`}>
+              {/* 검색 */}
+              <div className="sidebar-search">
+                <div className="search-input-wrap">
+                  <SearchIcon />
 
-          {/* 부서 필터 */}
-          <div className="sidebar-filters">
-            <button
-              className={`filter-chip ${departmentFilter === 'all' ? 'active' : ''
-                }`}
-              onClick={() => setDepartmentFilter('all')}
-            >
-              전체
-            </button>
+                  <input
+                    className="search-input"
+                    placeholder="제목 / 주소 검색"
+                    value={searchQuery}
+                    onChange={(e) =>
+                      setSearchQuery(e.target.value)
+                    }
+                  />
+                </div>
+              </div>
 
-            {departmentMenus.map((dept) => (
-              <button
-                key={dept.key}
-                className={`filter-chip ${departmentFilter === dept.key ? 'active' : ''
-                  }`}
-                onClick={() =>
-                  setDepartmentFilter(dept.key)
-                }
-              >
-                {dept.icon} {dept.label} ({dept.count})
-              </button>
-            ))}
-          </div>
+              {/* 상태 필터 */}
+              <div className="sidebar-status-wrap">
+                <div className="status-menu">
+                  <button 
+                    className={`status-menu-item ${statusFilter === 'pending' ? 'active' : ''}`}
+                    onClick={() => setStatusFilter('pending')}
+                  >
+                    접수 중
+                  </button>
+                  <button 
+                    className={`status-menu-item ${statusFilter === 'processing' ? 'active' : ''}`}
+                    onClick={() => setStatusFilter('processing')}
+                  >
+                    처리 중
+                  </button>
+                  <button 
+                    className={`status-menu-item ${statusFilter === 'completed' ? 'active' : ''}`}
+                    onClick={() => setStatusFilter('completed')}
+                  >
+                    처리 완료
+                  </button>
+                  <button 
+                    className={`status-menu-item ${statusFilter === 'rejected' ? 'active' : ''}`}
+                    onClick={() => setStatusFilter('rejected')}
+                  >
+                    반려됨
+                  </button>
+                </div>
+              </div>
 
-
-          {/* 목록 */}
-          <div className="report-list">
-            {filteredReports.map((report) => {
-              const cat = getCat(report.category);
-
-              return (
-                <div
-                  key={report.id}
-                  className="report-item"
-                  onClick={() => moveToMarker(report.id)}
+              {/* 부서 필터 */}
+              <div className="sidebar-filters">
+                <button
+                  className={`filter-chip ${departmentFilter === 'all' ? 'active' : ''
+                    }`}
+                  onClick={() => setDepartmentFilter('all')}
                 >
-                  {/* 상단 */}
-                  <div className="card-top">
-                    <span
-                      className="category-tag"
-                      style={{
-                        background: cat.bg,
-                        color: cat.color,
-                      }}
+                  전체
+                </button>
+
+                {departmentMenus.map((dept) => (
+                  <button
+                    key={dept.key}
+                    className={`filter-chip ${departmentFilter === dept.key ? 'active' : ''
+                      }`}
+                    onClick={() =>
+                      setDepartmentFilter(dept.key)
+                    }
+                  >
+                    {dept.label} ({dept.count})
+                  </button>
+                ))}
+              </div>
+
+
+              {/* 목록 */}
+              <div className="report-list">
+                {filteredReports.map((report) => {
+                  const cat = getCat(report.category);
+
+                  return (
+                    <div
+                      key={report.id}
+                      className="report-item"
+                      onClick={() => moveToMarker(report.id)}
                     >
-                      {cat.icon} {cat.label}
-                    </span>
+                      {/* 상단 */}
+                      <div className="card-top">
+                        <span
+                          className="category-tag"
+                          style={{
+                            background: cat.bg,
+                            color: cat.color,
+                          }}
+                        >
+                          {cat.label}
+                        </span>
 
-                    <span className="card-time">
-                      {formatTime(report.created_at)}
-                    </span>
-                  </div>
-
-                  {/* 작성자 정보 */}
-                  <div className="card-user-info">
-                    <span className="user-nickname">
-                      👤 {report.user_label || report.nickname || '사용자'}
-                    </span>
-                  </div>
-
-                  {/* 제목 */}
-                  <p className="card-title">
-                    {report.title}
-                  </p>
-
-                  {/* 실제 부서 */}
-                  <div className="department-box">
-                    <span className="dept-label">
-                      담당 부서
-                    </span>
-
-                    <span className="dept-name">
-                      {report.dept.icon} {report.dept.label}
-                    </span>
-                  </div>
-
-                  {/* 위치 */}
-                  <div className="card-address">
-                    📍 {report.address || '위치 정보 없음'}
-                  </div>
-
-                  {/* 첨부파일 요약 */}
-                  {report.attachment_urls?.length > 0 && (
-                    <div className="card-attachments-summary">
-                      📎 첨부파일: {report.attachment_urls[0].split(/[\\/]/).pop()}
-                      {report.attachment_urls.length > 1 && ` 외 ${report.attachment_urls.length - 1}건`}
-                    </div>
-                  )}
-
-                  {/* 업무 */}
-                  <div className="task-box">
-                    <div className="task-title">
-                      처리 업무
-                    </div>
-
-                    {(report.dept.tasks || []).map((task, idx) => (
-                      <div
-                        className="task-row"
-                        key={idx}
-                      >
-                        • {task}
+                        <span className="card-time">
+                          {formatTime(report.created_at)}
+                        </span>
                       </div>
-                    ))}
-                  </div>
 
-                  {/* 하단 버튼 영역 */}
-                  <div className="card-actions">
-                    <button
-                      className="detail-view-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedReport(report);
-                      }}
-                    >
-                      자세히
-                    </button>
+                      {/* 작성자 정보 */}
+                      <div className="card-user-info">
+                        <span className="user-nickname">
+                          👤 {report.user_label || report.nickname || '사용자'}
+                        </span>
+                      </div>
 
-                    {report.status === 'pending' && (
-                      <>
-                        <button
-                          className="accept-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            updateStatus(report.id, 'processing');
-                          }}
-                        >
-                          수락
-                        </button>
-                        <button
-                          className="reject-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setRejectingReportId(report.id);
-                          }}
-                        >
-                          반려
-                        </button>
-                      </>
-                    )}
+                      {/* 제목 */}
+                      <p className="card-title">
+                        {report.title}
+                      </p>
 
-                    {report.status === 'processing' && (
-                      <button
-                        className="resolve-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateStatus(report.id, 'completed');
-                        }}
-                      >
-                        완료 처리
-                      </button>
-                    )}
-                  </div>
+                      {/* 실제 부서 */}
+                      <div className="department-box">
+                        <span className="dept-label">
+                          담당 부서
+                        </span>
 
-                  {/* 반려 사유 입력 오버레이 */}
-                  {rejectingReportId === report.id && (
-                    <div className="rejection-overlay" onClick={(e) => e.stopPropagation()}>
-                      <div className="rejection-title">민원 반려 사유 선택</div>
-                      <select 
-                        className="rejection-select"
-                        value={rejectionReason}
-                        onChange={(e) => setRejectionReason(e.target.value)}
-                      >
-                        <option value="접수 내용이 부족합니다">접수 내용이 부족합니다</option>
-                        <option value="위치 정보가 누락되었습니다">위치 정보가 누락되었습니다</option>
-                        <option value="관할 구역이 아닙니다">관할 구역이 아닙니다</option>
-                        <option value="기타">기타(직접작성)</option>
-                      </select>
+                        <span className="dept-name">
+                          {report.dept.label}
+                        </span>
+                      </div>
 
-                      {rejectionReason === '기타' && (
-                        <textarea 
-                          className="rejection-input"
-                          placeholder="반려 사유를 직접 입력해주세요."
-                          value={customReason}
-                          onChange={(e) => setCustomReason(e.target.value)}
-                        />
+                      {/* 위치 */}
+                      <div className="card-address">
+                        📍 {report.address || '위치 정보 없음'}
+                      </div>
+
+                      {/* 첨부파일 요약 */}
+                      {report.attachment_urls?.length > 0 && (
+                        <div className="card-attachments-summary">
+                          📎 첨부파일: {report.attachment_urls[0].split(/[\\/]/).pop()}
+                          {report.attachment_urls.length > 1 && ` 외 ${report.attachment_urls.length - 1}건`}
+                        </div>
                       )}
 
-                      <div className="rejection-actions">
-                        <button 
-                          className="rejection-confirm-btn"
-                          onClick={() => {
-                            const reason = rejectionReason === '기타' ? customReason : rejectionReason;
-                            updateStatus(report.id, 'rejected', reason);
+                      {/* 업무 */}
+                      <div className="task-box">
+                        <div className="task-title">
+                          처리 업무
+                        </div>
+
+                        {(report.dept.tasks || []).map((task, idx) => (
+                          <div
+                            className="task-row"
+                            key={idx}
+                          >
+                            • {task}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* 하단 버튼 영역 */}
+                      <div className="card-actions">
+                        <button
+                          className="detail-view-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedReport(report);
                           }}
                         >
-                          반려 확정
+                          자세히
                         </button>
-                        <button 
-                          className="rejection-cancel-btn"
-                          onClick={() => setRejectingReportId(null)}
-                        >
-                          취소
-                        </button>
+
+                        {report.status === 'pending' && (
+                          <>
+                            <button
+                              className="accept-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateStatus(report.id, 'processing');
+                              }}
+                            >
+                              수락
+                            </button>
+                            <button
+                              className="reject-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRejectingReportId(report.id);
+                              }}
+                            >
+                              반려
+                            </button>
+                          </>
+                        )}
+
+                        {report.status === 'processing' && (
+                          <button
+                            className="resolve-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              updateStatus(report.id, 'completed');
+                            }}
+                          >
+                            완료 처리
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  )}
-                  
-                  {/* 처리 완료 라벨 (완료 상태일 때 표시) */}
-                  {report.status === 'completed' && (
-                    <div className="resolved-label">
-                      ✅ 처리 완료됨 ({formatTime(report.resolved_at)})
-                    </div>
-                  )}
 
-                  {/* 반려 라벨 */}
-                  {report.status === 'rejected' && (
-                    <div className="resolved-label" style={{ color: '#ef4444', background: 'rgba(239,68,68,0.08)' }}>
-                      ❌ 반려됨: {report.rejection_reason}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                      {/* 반려 사유 입력 오버레이 */}
+                      {rejectingReportId === report.id && (
+                        <div className="rejection-overlay" onClick={(e) => e.stopPropagation()}>
+                          <div className="rejection-title">민원 반려 사유 선택</div>
+                          <select 
+                            className="rejection-select"
+                            value={rejectionReason}
+                            onChange={(e) => setRejectionReason(e.target.value)}
+                          >
+                            <option value="접수 내용이 부족합니다">접수 내용이 부족합니다</option>
+                            <option value="위치 정보가 누락되었습니다">위치 정보가 누락되었습니다</option>
+                            <option value="관할 구역이 아닙니다">관할 구역이 아닙니다</option>
+                            <option value="기타">기타(직접작성)</option>
+                          </select>
 
-            {filteredReports.length === 0 && (
-              <div className="empty-state">
-                표시할 민원이 없습니다.
+                          {rejectionReason === '기타' && (
+                            <textarea 
+                              className="rejection-input"
+                              placeholder="반려 사유를 직접 입력해주세요."
+                              value={customReason}
+                              onChange={(e) => setCustomReason(e.target.value)}
+                            />
+                          )}
+
+                          <div className="rejection-btns">
+                            <button className="rej-cancel" onClick={() => setRejectingReportId(null)}>취소</button>
+                            <button 
+                              className="rej-confirm" 
+                              onClick={() => updateStatus(report.id, 'rejected', rejectionReason === '기타' ? customReason : rejectionReason)}
+                            >
+                              반려 확정
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {filteredReports.length === 0 && (
+                  <div className="empty-state">
+                    검색 결과가 없습니다.
+                  </div>
+                )}
+            </div>
+          </aside>
+        </div>
+
+        {/* 부서 관리 뷰 */}
+        {activeView === 'departments' && (
+          <div className="dept-manager-view">
+            <div className="dept-manager-header">
+              <h2 className="view-title">🏢 부서 및 AI 분류 관리</h2>
+              <p className="view-subtitle">새로운 부서를 추가하면 AI가 자동으로 민원을 해당 부서로 분류하기 시작합니다.</p>
+            </div>
+
+            <div className="dept-manager-content">
+              {/* 추가 폼 */}
+              <div className="dept-form-card">
+                <h3 className="card-inner-title">➕ 새 부서 추가</h3>
+                <form className="dept-form" onSubmit={handleAddDepartment}>
+                  <div className="form-row">
+                    <label>
+                      <span>부서 코드 (Key)</span>
+                      <input 
+                        placeholder="예: tax, health" 
+                        value={newDept.key}
+                        onChange={e => setNewDept({...newDept, key: e.target.value})}
+                      />
+                    </label>
+                    <label>
+                      <span>부서명 (Label)</span>
+                      <input 
+                        placeholder="예: 세무과" 
+                        value={newDept.label}
+                        onChange={e => setNewDept({...newDept, label: e.target.value})}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      <span>테마 색상</span>
+                      <div className="color-input-group">
+                        <input 
+                          type="color" 
+                          value={newDept.color}
+                          onChange={e => setNewDept({...newDept, color: e.target.value})}
+                        />
+                        <span className="hex-code">{newDept.color.toUpperCase()}</span>
+                      </div>
+                    </label>
+                  </div>
+                  <label>
+                    <span>AI 분류 키워드 (쉼표 구분)</span>
+                    <textarea 
+                      placeholder="예: 세금, 지방세, 환급, 고지서, 연체" 
+                      value={newDept.keywords}
+                      onChange={e => setNewDept({...newDept, keywords: e.target.value})}
+                    />
+                  </label>
+                  <label>
+                    <span>주요 처리 업무 (쉼표 구분)</span>
+                    <textarea 
+                      placeholder="예: 지방세 상담 및 안내, 환급금 조회 및 신청" 
+                      value={newDept.tasks}
+                      onChange={e => setNewDept({...newDept, tasks: e.target.value})}
+                    />
+                  </label>
+                  <button className="dept-submit-btn" type="submit" disabled={addingDept}>
+                    {addingDept ? '추가 중...' : '부서 등록 및 AI 프롬프트 갱신'}
+                  </button>
+                </form>
               </div>
-            )}
+
+              {/* 리스트 */}
+              <div className="dept-list-card">
+                <h3 className="card-inner-title">📋 현재 운영 부서 목록</h3>
+                <div className="dept-table-wrap" style={{ maxHeight: '450px', overflowY: 'auto' }}>
+                  <table className="dept-table">
+                    <thead>
+                      <tr>
+                        <th>부서명</th>
+                        <th>코드</th>
+                        <th>키워드</th>
+                        <th>작업</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {departments.map(dept => (
+                        <tr key={dept.id}>
+                          <td className="td-label" style={{color: dept.color, fontWeight: 700}}>{dept.label}</td>
+                          <td className="td-key"><code>{dept.key}</code></td>
+                          <td className="td-keywords">
+                            {(dept.keywords || []).map((k, idx) => (
+                              <span key={idx} className="keyword-chip">{k}</span>
+                            ))}
+                            {(dept.keywords || []).length === 0 && (
+                              <span className="text-muted" style={{fontSize: '11px'}}>키워드 없음</span>
+                            )}
+                          </td>
+                          <td className="td-actions">
+                            <button 
+                              className="dept-del-btn"
+                              onClick={() => handleDeleteDepartment(dept.id, dept.label)}
+                            >
+                              삭제
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
-        </aside>
+        )}
       </div>
 
       {/* 민원 상세 모달 */}
@@ -856,7 +1021,7 @@ function App() {
             <div className="modal-header">
               <div className="modal-title-area">
                 <span className="modal-category">
-                  {getCat(selectedReport.category).icon} {getCat(selectedReport.category).label}
+                  {getCat(selectedReport.category).label}
                 </span>
                 <h2 className="modal-title">{selectedReport.title}</h2>
               </div>
