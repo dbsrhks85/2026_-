@@ -449,7 +449,6 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       _filePath = path;
       _normalizedFilePath = null;
       _isNormalizing = true;
-      _determinePosition();
     });
 
     _showSnack(

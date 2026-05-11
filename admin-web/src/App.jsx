@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, Legend 
 } from 'recharts';
+import { fetchEventSource } from '@microsoft/fetch-event-source';
 import './index.css';
 
 // ─────────────────────────────────────────
@@ -344,6 +345,33 @@ function App() {
       loadReports();
     });
   }, [kakao, loadDepartments, loadReports, authChecked, accessToken, admin]);
+
+  // SSE 실시간 갱신 수신
+  useEffect(() => {
+    if (!authChecked || !accessToken || !admin) return;
+
+    const controller = new AbortController();
+    
+    fetchEventSource(`${API_URL}/admin/events`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal,
+      onmessage(event) {
+        if (event.event === 'new_complaint') {
+          console.log('[sse] 새 민원 접수 이벤트 수신 - 목록 갱신');
+          loadReports();
+        }
+      },
+      onerror(err) {
+        console.warn('[sse] 연결 오류 발생, 자동 재연결 대기...', err);
+        // 에러가 나도 자동으로 재연결을 시도함 (fetchEventSource 기본 동작)
+      }
+    });
+
+    return () => {
+      console.log('[sse] 컴포넌트 언마운트 - 연결 종료');
+      controller.abort();
+    };
+  }, [authChecked, accessToken, admin, loadReports]);
 
   // 데이터 가공
   const processedReports = useMemo(() => {

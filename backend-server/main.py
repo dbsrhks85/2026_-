@@ -33,6 +33,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Que
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
@@ -92,6 +93,24 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
 
 # 정적 파일 서빙 (첨부파일 열람용)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# ─────────────────────────────────────────
+# SSE 브로드캐스터 — 관리자 실시간 갱신
+# ─────────────────────────────────────────
+_sse_queues: list[asyncio.Queue] = []  # 연결된 관리자 클라이언트 큐 목록
+
+async def broadcast_new_complaint():
+    """새 민원 접수 시 모든 관리자 클라이언트에 이벤트 브로드캐스트"""
+    dead = []
+    for q in _sse_queues:
+        try:
+            await q.put("refresh")
+        except Exception:
+            dead.append(q)
+    for q in dead:
+        _sse_queues.remove(q)
+    print(f"[sse] 브로드캐스트 완료: {len(_sse_queues)}개 클라이언트")
+
 
 KAKAO_REST_API_KEY = (
     os.getenv("KAKAO_REST_API_KEY")
@@ -632,6 +651,10 @@ async def submit_complaint(
     # 5. DB 저장 및 로그 기록
     try:
         db_res = await supabase.table("complaints").insert(complaint_data).execute()
+
+        # 민원 접수 완료 → 관리자 대시보드에 실시간 알림
+        await broadcast_new_complaint()
+
         
         # 테스트 로그 저장 (선택 사항)
         log_path = os.path.join(os.path.dirname(__file__), "test_results", f"log_{uuid.uuid4().hex[:8]}.json")
@@ -647,6 +670,32 @@ async def submit_complaint(
     except Exception as e:
         print(f"DB Insert Error: {e}")
         raise HTTPException(status_code=500, detail=f"데이터 저장 실패: {str(e)}")
+
+
+@app.get("/admin/events")
+async def admin_events(_: bool = Depends(require_admin)):
+    """관리자 대시보드 실시간 갱신용 SSE 엔드포인트"""
+    queue: asyncio.Queue = asyncio.Queue()
+    _sse_queues.append(queue)
+    print(f"[sse] 관리자 연결 ({len(_sse_queues)}명 접속 중)")
+
+    async def event_generator():
+        try:
+            while True:
+                # 새 이벤트 대기 (연결 유지용 keep-alive 포함)
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield {"event": "new_complaint", "data": data}
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "keep-alive"}  # 연결 유지
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if queue in _sse_queues:
+                _sse_queues.remove(queue)
+            print(f"[sse] 관리자 연결 해제 ({len(_sse_queues)}명 접속 중)")
+
+    return EventSourceResponse(event_generator())
 
 @app.get("/download-attachments/{report_id}")
 async def download_attachments(report_id: int, _: bool = Depends(require_admin)):
