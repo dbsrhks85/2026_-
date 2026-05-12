@@ -110,6 +110,8 @@ class MyApp extends StatelessWidget {
   }
 }
 
+enum SheetType { none, myReports, departments }
+
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -125,8 +127,14 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   bool _isAuthRestoring = true;
   bool _isLoggingIn = false;
   AppUser? _currentUser;
+  
+  // 시트 상태
+  SheetType _currentSheet = SheetType.none;
   List<Map<String, dynamic>> _myReports = [];
   bool _isLoadingMyReports = false;
+  List<dynamic> _departments = [];
+  bool _isLoadingDepartments = false;
+
   String? _pushToken;
   StreamSubscription<String>? _pushTokenRefreshSub;
   StreamSubscription<RemoteMessage>? _foregroundMessageSub;
@@ -628,13 +636,17 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
 
     setState(() => _isLoadingMyReports = true);
     try {
+      if (_departments.isEmpty) {
+        final list = await _apiClient.getDepartments();
+        _departments = list;
+      }
       final reports = await _fetchMyReports();
       if (!mounted) return;
       setState(() {
         _myReports = reports;
         _isLoadingMyReports = false;
+        _currentSheet = SheetType.myReports;
       });
-      _showMyReportsBottomSheet();
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoadingMyReports = false);
@@ -642,249 +654,23 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     }
   }
 
-  void _showMyReportsBottomSheet() {
-    String selectedStatus = 'pending';
-    final statuses = ['pending', 'processing', 'completed', 'rejected'];
-
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) {
-          final filtered = _myReports
-              .where((report) => report['status'] == selectedStatus)
-              .toList();
-
-          return Container(
-            height: MediaQuery.of(context).size.height * 0.82,
-            decoration: const BoxDecoration(
-              color: AppColors.cloudSoft,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-            ),
-            padding: EdgeInsets.fromLTRB(
-              20,
-              14,
-              20,
-              MediaQuery.of(context).padding.bottom + 20,
-            ),
-            child: Column(
-              children: [
-                Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 18),
-                  decoration: BoxDecoration(
-                    color: AppColors.cloudDeep,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.list_alt_rounded,
-                      color: AppColors.accentBlue,
-                    ),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        '내 민원 현황',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textDark,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      icon: const Icon(
-                        Icons.close_rounded,
-                        color: AppColors.textMid,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: statuses.map((status) {
-                      final count = _myReports
-                          .where((r) => r['status'] == status)
-                          .length;
-                      final selected = selectedStatus == status;
-                      final color = _reportStatusColor(status);
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text('${_reportStatusLabel(status)} $count'),
-                          selected: selected,
-                          selectedColor: color.withOpacity(0.16),
-                          backgroundColor: AppColors.cloudDancer,
-                          labelStyle: TextStyle(
-                            color: selected ? color : AppColors.textMid,
-                            fontWeight: selected
-                                ? FontWeight.w800
-                                : FontWeight.w600,
-                            fontSize: 12,
-                          ),
-                          side: BorderSide(
-                            color: selected
-                                ? color.withOpacity(0.45)
-                                : AppColors.cloudDeep,
-                          ),
-                          onSelected: (_) =>
-                              setModalState(() => selectedStatus = status),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: filtered.isEmpty
-                      ? Center(
-                          child: Text(
-                            '${_reportStatusLabel(selectedStatus)} 민원이 없습니다.',
-                            style: const TextStyle(
-                              color: AppColors.textMid,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        )
-                      : ListView.separated(
-                          itemCount: filtered.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final report = filtered[index];
-                            final status = report['status']?.toString();
-                            final color = _reportStatusColor(status);
-                            final title = report['title']?.toString().trim();
-                            final address = report['address']
-                                ?.toString()
-                                .trim();
-                            final rejectionReason = report['rejection_reason']
-                                ?.toString()
-                                .trim();
-
-                            return Container(
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: AppColors.cloudDancer,
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: AppColors.cloudDeep),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 9,
-                                          vertical: 5,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: color.withOpacity(0.12),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(
-                                              _reportStatusIcon(status),
-                                              size: 13,
-                                              color: color,
-                                            ),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              _reportStatusLabel(status),
-                                              style: TextStyle(
-                                                color: color,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w800,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const Spacer(),
-                                      Text(
-                                        _formatReportDate(report['created_at']),
-                                        style: const TextStyle(
-                                          color: AppColors.textLight,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    (title == null || title.isEmpty)
-                                        ? '제목 없음'
-                                        : title,
-                                    style: const TextStyle(
-                                      color: AppColors.textDark,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 7),
-                                  Text(
-                                    (address == null || address.isEmpty)
-                                        ? '주소 정보 없음'
-                                        : address,
-                                    style: const TextStyle(
-                                      color: AppColors.textMid,
-                                      fontSize: 12,
-                                      height: 1.35,
-                                    ),
-                                  ),
-                                  if (status == 'rejected' &&
-                                      rejectionReason != null &&
-                                      rejectionReason.isNotEmpty) ...[
-                                    const SizedBox(height: 10),
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.recordRed.withOpacity(
-                                          0.08,
-                                        ),
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: AppColors.recordRed
-                                              .withOpacity(0.2),
-                                        ),
-                                      ),
-                                      child: Text(
-                                        '반려 사유: $rejectionReason',
-                                        style: const TextStyle(
-                                          color: AppColors.recordRed,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
+  Future<void> _openDepartmentsSheet() async {
+    if (_isLoadingDepartments) return;
+    
+    setState(() => _isLoadingDepartments = true);
+    try {
+      final list = await _apiClient.getDepartments();
+      if (!mounted) return;
+      setState(() {
+        _departments = list;
+        _isLoadingDepartments = false;
+        _currentSheet = SheetType.departments;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoadingDepartments = false);
+      _showSnack('부서 연락처를 불러오지 못했습니다.');
+    }
   }
 
   // ──────────────────────────────────────────────────────────
@@ -1628,10 +1414,10 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
               ),
             ),
 
-            // ── Layer 2: UI 레이아웃 (헤더, 카드, 버튼) ──────────
+            // ── Layer 2: UI 레이아웃 (헤더 제외, 헤더는 최상단으로 분리) ──────────
             Column(
               children: [
-                _buildHeader(),
+                const SizedBox(height: 68),
                 Expanded(child: _buildCenterContent()),
                 _buildLocationCard(),
                 _buildBottomPanel(),
@@ -1716,6 +1502,17 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
+              
+            // ── Layer 4: 커스텀 시트 오버레이 ──
+            _buildCustomSheetOverlay(),
+            
+            // ── Layer 5: 헤더 (최상단 고정) ──
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _buildHeader(),
+            ),
           ],
         ),
       ),
@@ -1728,8 +1525,40 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: Row(
         children: [
-          GestureDetector(
-            onTap: _openMyReportsSheet,
+          PopupMenuButton<SheetType>(
+            offset: const Offset(0, 46),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            color: Colors.white,
+            elevation: 8,
+            onSelected: (SheetType type) {
+              if (type == SheetType.myReports) {
+                _openMyReportsSheet();
+              } else if (type == SheetType.departments) {
+                _openDepartmentsSheet();
+              }
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<SheetType>>[
+              const PopupMenuItem<SheetType>(
+                value: SheetType.myReports,
+                child: Row(
+                  children: [
+                    Text('📋', style: TextStyle(fontSize: 18)),
+                    SizedBox(width: 10),
+                    Text('내 민원 현황', style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.textDark)),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<SheetType>(
+                value: SheetType.departments,
+                child: Row(
+                  children: [
+                    Text('📞', style: TextStyle(fontSize: 18)),
+                    SizedBox(width: 10),
+                    Text('부서 연락처', style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.textDark)),
+                  ],
+                ),
+              ),
+            ],
             child: Container(
               width: 36,
               height: 36,
@@ -1739,7 +1568,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: AppColors.cloudDeep),
               ),
-              child: _isLoadingMyReports
+              child: (_isLoadingMyReports || _isLoadingDepartments)
                   ? const Padding(
                       padding: EdgeInsets.all(10),
                       child: CircularProgressIndicator(
@@ -2225,6 +2054,484 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
           style: TextStyle(fontSize: 10, color: AppColors.textLight),
         ),
       ],
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // [Step 5] 커스텀 바텀 시트 (헤더를 가리지 않는 패널)
+  // ──────────────────────────────────────────────────────────
+
+  Widget _buildCustomSheetOverlay() {
+    final bool isOpen = _currentSheet != SheetType.none;
+    
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          // 배경 터치 시 닫기 (투명)
+          if (isOpen)
+            GestureDetector(
+              onTap: () => setState(() => _currentSheet = SheetType.none),
+              child: Container(color: Colors.transparent),
+            ),
+            
+          // 애니메이션 패널
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOutCubic,
+            left: 0,
+            right: 0,
+            bottom: isOpen ? 0 : -MediaQuery.of(context).size.height,
+            height: MediaQuery.of(context).size.height * 0.82,
+            child: Container(
+              decoration: BoxDecoration(
+                color: AppColors.cloudSoft,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: [
+                  if (isOpen)
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.15),
+                      blurRadius: 20,
+                      offset: const Offset(0, -5),
+                    ),
+                ],
+              ),
+              child: _currentSheet == SheetType.myReports 
+                  ? _buildMyReportsSheet()
+                  : _currentSheet == SheetType.departments
+                      ? _buildDepartmentsSheet()
+                      : const SizedBox.shrink(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _selectedReportStatus = 'pending';
+
+  Widget _buildMyReportsSheet() {
+    final statuses = ['pending', 'processing', 'completed', 'rejected'];
+
+    return StatefulBuilder(
+      builder: (context, setSheetState) {
+        final filtered = _myReports
+            .where((report) => report['status'] == _selectedReportStatus)
+            .toList();
+
+        return Padding(
+          padding: EdgeInsets.fromLTRB(20, 14, 20, MediaQuery.of(context).padding.bottom + 20),
+          child: Column(
+            children: [
+              Container(
+                width: 36, height: 4, margin: const EdgeInsets.only(bottom: 18),
+                decoration: BoxDecoration(color: AppColors.cloudDeep, borderRadius: BorderRadius.circular(2)),
+              ),
+              Row(
+                children: [
+                  const Icon(Icons.list_alt_rounded, color: AppColors.accentBlue),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text('내 민원 현황', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textDark)),
+                  ),
+                  IconButton(
+                    onPressed: () => setState(() => _currentSheet = SheetType.none),
+                    icon: const Icon(Icons.close_rounded, color: AppColors.textMid),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: statuses.map((status) {
+                    final count = _myReports.where((r) => r['status'] == status).length;
+                    final selected = _selectedReportStatus == status;
+                    final color = _reportStatusColor(status);
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: Text('${_reportStatusLabel(status)} $count'),
+                        selected: selected,
+                        selectedColor: color.withOpacity(0.16),
+                        backgroundColor: AppColors.cloudDancer,
+                        labelStyle: TextStyle(
+                          color: selected ? color : AppColors.textMid,
+                          fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                        side: BorderSide(
+                          color: selected ? color.withOpacity(0.45) : AppColors.cloudDeep,
+                        ),
+                        onSelected: (_) {
+                          setSheetState(() => _selectedReportStatus = status);
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Text(
+                          '${_reportStatusLabel(_selectedReportStatus)} 민원이 없습니다.',
+                          style: const TextStyle(color: AppColors.textMid, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          final report = filtered[index];
+                          final status = report['status']?.toString();
+                          final color = _reportStatusColor(status);
+                          final title = report['title']?.toString().trim();
+                          final address = report['address']?.toString().trim();
+                          final rejectionReason = report['rejection_reason']?.toString().trim();
+
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: AppColors.cloudDancer,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: AppColors.cloudDeep),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                                      decoration: BoxDecoration(
+                                        color: color.withOpacity(0.12),
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(_reportStatusIcon(status), size: 13, color: color),
+                                          const SizedBox(width: 4),
+                                          Text(_reportStatusLabel(status), style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w800)),
+                                        ],
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Text(_formatReportDate(report['created_at']), style: const TextStyle(color: AppColors.textLight, fontSize: 11, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  (title == null || title.isEmpty) ? '제목 없음' : title,
+                                  style: const TextStyle(color: AppColors.textDark, fontSize: 15, fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 7),
+                                Text(
+                                  (address == null || address.isEmpty) ? '주소 정보 없음' : address,
+                                  style: const TextStyle(color: AppColors.textMid, fontSize: 12, height: 1.35),
+                                ),
+                                if (status == 'rejected' && rejectionReason != null && rejectionReason.isNotEmpty) ...[
+                                  const SizedBox(height: 10),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.recordRed.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(color: AppColors.recordRed.withOpacity(0.2)),
+                                    ),
+                                    child: Text('반려 사유: $rejectionReason', style: const TextStyle(color: AppColors.recordRed, fontSize: 12, fontWeight: FontWeight.w700)),
+                                  ),
+                                ],
+                                const SizedBox(height: 12),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: OutlinedButton(
+                                    onPressed: () => _showReportDetailsDialog(report),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: AppColors.textMid,
+                                      side: const BorderSide(color: AppColors.cloudDeep),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                    ),
+                                    child: const Text('자세히 보기', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showReportDetailsDialog(Map<String, dynamic> report) {
+    final status = report['status']?.toString();
+    final color = _reportStatusColor(status);
+    final title = report['title']?.toString().trim();
+    final address = report['address']?.toString().trim();
+    final sttText = report['stt_text']?.toString().trim() ?? '내용 없음';
+    final createdAt = _formatReportDate(report['created_at']);
+    
+    // 부서 매핑
+    final deptKey = report['department']?.toString();
+    Map<String, dynamic>? deptInfo;
+    if (deptKey != null) {
+      try {
+        deptInfo = _departments.firstWhere((d) => d['key'] == deptKey) as Map<String, dynamic>?;
+      } catch (e) {
+        deptInfo = null;
+      }
+    }
+    final deptName = deptInfo?['label'] ?? '부서 미지정';
+    final deptPhone = deptInfo?['phone'] ?? '번호 없음';
+
+    // 첨부파일
+    final attachments = report['attachment_urls'] as List<dynamic>? ?? [];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(_reportStatusIcon(status), color: color, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      (title == null || title.isEmpty) ? '제목 없음' : title,
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textDark),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded, color: AppColors.textMid),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 원본 텍스트
+                      const Text('원본 텍스트', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.accentBlue)),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.cloudDancer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(sttText, style: const TextStyle(fontSize: 14, color: AppColors.textDark, height: 1.4)),
+                      ),
+                      const SizedBox(height: 16),
+                      
+                      // 주소 및 접수 일자
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('접수 일자', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textMid)),
+                                const SizedBox(height: 4),
+                                Text(createdAt, style: const TextStyle(fontSize: 14, color: AppColors.textDark)),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('첨부 위치', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textMid)),
+                                const SizedBox(height: 4),
+                                Text(
+                                  (address == null || address.isEmpty) ? '주소 없음' : address,
+                                  style: const TextStyle(fontSize: 14, color: AppColors.textDark),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      
+                      // 담당 부서
+                      const Text('담당 부서 및 연락처', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textMid)),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: AppColors.cloudDeep),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.account_balance_rounded, size: 16, color: AppColors.textMid),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(deptName, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark))),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: AppColors.accentBlue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.phone, size: 12, color: AppColors.accentBlue),
+                                  const SizedBox(width: 4),
+                                  Text(deptPhone, style: const TextStyle(fontSize: 12, color: AppColors.accentBlue, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      // 첨부파일
+                      if (attachments.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        const Text('첨부파일', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textMid)),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 80,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: attachments.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 8),
+                            itemBuilder: (context, idx) {
+                              final url = attachments[idx].toString();
+                              return ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  url,
+                                  width: 80,
+                                  height: 80,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Container(
+                                    width: 80,
+                                    height: 80,
+                                    color: AppColors.cloudDeep,
+                                    child: const Icon(Icons.broken_image_rounded, color: AppColors.textLight),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDepartmentsSheet() {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20, 14, 20, MediaQuery.of(context).padding.bottom + 20),
+      child: Column(
+        children: [
+          Container(
+            width: 36, height: 4, margin: const EdgeInsets.only(bottom: 18),
+            decoration: BoxDecoration(color: AppColors.cloudDeep, borderRadius: BorderRadius.circular(2)),
+          ),
+          Row(
+            children: [
+              const Text('📞', style: TextStyle(fontSize: 20)),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('부서 별 연락처 리스트', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textDark)),
+              ),
+              IconButton(
+                onPressed: () => setState(() => _currentSheet = SheetType.none),
+                icon: const Icon(Icons.close_rounded, color: AppColors.textMid),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: _departments.isEmpty
+                ? const Center(child: Text('부서 정보가 없습니다.', style: TextStyle(color: AppColors.textMid)))
+                : ListView.separated(
+                    itemCount: _departments.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final dept = _departments[index];
+                      final tasks = dept['tasks'] as List<dynamic>? ?? [];
+                      
+                      return Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppColors.cloudDancer,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.cloudDeep),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(dept['label'] ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    tasks.join(', '),
+                                    style: const TextStyle(fontSize: 12, color: AppColors.textMid),
+                                    maxLines: 2, overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: AppColors.accentBlue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.phone, size: 14, color: AppColors.accentBlue),
+                                  const SizedBox(width: 6),
+                                  Text(dept['phone'] ?? '번호 없음', style: const TextStyle(color: AppColors.accentBlue, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }

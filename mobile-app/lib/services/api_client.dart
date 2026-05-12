@@ -43,4 +43,13 @@ class ApiClient {
 
   final AuthService _authService;
   final Dio dio;
+
+  Future<List<dynamic>> getDepartments() async {
+    final response = await dio.get('/get-departments');
+    if (response.statusCode == 200) {
+      return response.data as List<dynamic>;
+    } else {
+      throw Exception('부서 목록을 불러오지 못했습니다: ${response.statusCode}');
+    }
+  }
 }

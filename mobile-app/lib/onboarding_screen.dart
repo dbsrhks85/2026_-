@@ -27,7 +27,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     {
       "icon": "📞",
       "title": "단순 문의는 전화로 빠르게!",
-      "description": "단순 문의, 절차 확인, 자문 요청은\n이 앱보다 담당 부서에 직접 전화 문의 부탁드립니다.\n메뉴바의 부서 연락처 탭을 활용해보세요!"
+      "description": "단순 문의, 절차 확인, 자문 요청은\n담당 부서에 직접 전화 문의 부탁드립니다.\n(춘천시 민원 콜센터 033-250-3114)\n또는 메뉴바의 부서 연락처 탭을 활용해보세요!"
     },
   ];
 
