@@ -62,7 +62,9 @@ async def refresh_session(refresh_token: str = Form(...)):
     if stored.get("revoked_at"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked")
 
-    expires_at = datetime.fromisoformat(stored["expires_at"].replace("Z", "+00:00"))
+    dt_str = stored["expires_at"].replace(" ", "T").replace("Z", "+00:00")
+    if "+" in dt_str and ":" not in dt_str.split("+")[-1]: dt_str += ":00"
+    expires_at = datetime.fromisoformat(dt_str)
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
 

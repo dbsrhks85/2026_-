@@ -322,6 +322,47 @@ def validate_optional_lat_lng(lat: float | None, lng: float | None) -> None:
     if not is_valid_lat_lng(lat, lng):
         raise HTTPException(status_code=400, detail="유효하지 않은 좌표입니다.")
 
+
+def parse_db_datetime(value):
+    """
+    Supabase/PostgreSQL timestamp 문자열을 안전하게 datetime으로 변환한다.
+
+    처리 예시:
+    - 2026-05-11T14:10:20.39347+00:00
+    - 2026-05-11 14:10:20.39347+00:00
+    - 2026-05-11T14:10:20Z
+    - 2026-05-11T14:10:20+00
+    - None / 빈 문자열
+    """
+    if not value:
+        return None
+
+    dt_str = str(value).strip()
+    if not dt_str:
+        return None
+
+    # 공백 구분 timestamp를 ISO 형태로 보정
+    dt_str = dt_str.replace(" ", "T")
+
+    # UTC Z 표기를 Python fromisoformat 호환 형태로 보정
+    if dt_str.endswith("Z"):
+        dt_str = dt_str[:-1] + "+00:00"
+
+    # +00 형태를 +00:00 형태로 보정
+    if "+" in dt_str:
+        base, offset = dt_str.rsplit("+", 1)
+        if ":" not in offset:
+            dt_str = base + "+" + offset + ":00"
+
+    try:
+        parsed = datetime.fromisoformat(dt_str)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        print(f"[datetime parse failed] value={value}, normalized={dt_str}")
+        return None
+
 # ─────────────────────────────────────────
 # API 엔드포인트
 # ─────────────────────────────────────────
@@ -358,12 +399,13 @@ async def get_reports(_: bool = Depends(require_admin)):
         r["nickname"] = user.get("nickname") or "사용자"
         r["user_label"] = build_user_label(r["nickname"], r["kakao_id"])
 
-        if r["status"] == "completed" and r["resolved_at"]:
-            resolved_time = datetime.fromisoformat(r["resolved_at"].replace("Z", "+00:00"))
-            if now - resolved_time > timedelta(days=10):
+        if r.get("status") == "completed" and r.get("resolved_at"):
+            resolved_time = parse_db_datetime(r.get("resolved_at"))
+            if resolved_time and now - resolved_time > timedelta(days=10):
                 continue
         active.append(r)
     return active
+
 
 @app.get("/get-departments")
 async def get_departments():
@@ -787,8 +829,8 @@ async def get_stats(_: bool = Depends(require_admin)):
     
     hourly_counts = {i: 0 for i in range(24)}
     for r in reports:
-        created_at = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
-        if created_at >= today_start:
+        created_at = parse_db_datetime(r.get("created_at"))
+        if created_at and created_at >= today_start:
             hour = created_at.hour
             hourly_counts[hour] += 1
             

@@ -349,6 +349,7 @@ function App() {
 
   // SSE 실시간 갱신 수신
   useEffect(() => {
+  	return;
     if (!authChecked || !accessToken || !admin) return;
 
     const controller = new AbortController();
